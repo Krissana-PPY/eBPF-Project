@@ -1,0 +1,30 @@
+# Environment
+.env
+
+# SSL certs (วาง cert จริงเองหลัง deploy)
+nginx/certs/*.pem
+nginx/certs/*.crt
+nginx/certs/*.key
+
+# Logs
+nginx/logs/
+
+# Docker volumes (managed by Docker)
+pgdata/
+uploads/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Next.js
+.next/
+frontend/.next/
+
+# Python
+__pycache__/
+*.pyc
+
+# ผลการทดสอบ — ไม่ขึ้น git
+ผลวิจัย/
+results/

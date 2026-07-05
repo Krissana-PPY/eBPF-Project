@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { color-scheme: dark; }
+  body { background: #07090d; color: #c8daea; }
+  * { font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface border border-border rounded;
+  }
+  .tag {
+    @apply inline-block font-mono text-xs font-bold px-1.5 py-0.5 rounded;
+  }
+  .tag-ebpf  { @apply bg-accent/10  text-accent  border border-accent/30; }
+  .tag-htb   { @apply bg-htb/10    text-htb    border border-htb/30; }
+  .tag-noqos { @apply bg-noqos/10  text-noqos  border border-noqos/30; }
+  .section-title {
+    @apply font-mono text-sm font-semibold text-textdim tracking-wide;
+  }
+}

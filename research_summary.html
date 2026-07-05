@@ -1,0 +1,967 @@
+<!-- eBPF QoS Comparative Performance Analysis -->
+<title>eBPF QoS — Comparative Performance Analysis</title>
+<meta name="description" content="TCP network QoS comparison: No QoS vs HTB vs eBPF — throughput, latency, and overhead analysis using iperf3.">
+
+<style>
+:root {
+  --bg:          #07090d;
+  --surface:     #0c1420;
+  --surface2:    #111d2e;
+  --border:      #1a2b40;
+  --accent:      #00ddb0;
+  --accent-dim:  rgba(0,221,176,0.10);
+  --accent-line: rgba(0,221,176,0.28);
+  --htb:         #f59e0b;
+  --htb-dim:     rgba(245,158,11,0.10);
+  --htb-line:    rgba(245,158,11,0.28);
+  --noqos:       #5b7fa6;
+  --noqos-dim:   rgba(91,127,166,0.10);
+  --noqos-line:  rgba(91,127,166,0.28);
+  --text:        #c8daea;
+  --muted:       #4d6880;
+  --good:        #34d399;
+  --warn:        #fbbf24;
+  --bad:         #f87171;
+  --mono: 'JetBrains Mono','Cascadia Code','Fira Code','SF Mono','Menlo',monospace;
+  --sans: 'Segoe UI',system-ui,-apple-system,sans-serif;
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+html{scroll-behavior:smooth}
+
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--sans);
+  font-size:0.875rem;
+  line-height:1.6;
+  min-height:100vh;
+}
+
+/* ── Header ─────────────────────────────── */
+.site-header{
+  position:sticky;top:0;z-index:100;
+  background:rgba(7,9,13,0.90);
+  backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border);
+  padding:0.65rem 1.5rem;
+  display:flex;align-items:center;gap:0.875rem;
+}
+
+.hdr-badge{
+  font-family:var(--mono);font-size:0.65rem;font-weight:700;
+  letter-spacing:0.1em;color:var(--accent);
+  background:var(--accent-dim);
+  border:1px solid var(--accent-line);
+  padding:0.18rem 0.5rem;border-radius:3px;
+  white-space:nowrap;
+}
+
+.hdr-title{
+  font-family:var(--mono);font-size:0.78rem;
+  color:var(--text);font-weight:400;letter-spacing:0.02em;
+}
+
+.hdr-right{
+  margin-left:auto;
+  font-family:var(--mono);font-size:0.65rem;color:var(--muted);
+  display:flex;gap:1rem;flex-wrap:wrap;
+  white-space:nowrap;
+}
+
+/* ── Main ───────────────────────────────── */
+main{
+  max-width:1100px;margin:0 auto;
+  padding:2rem 1.5rem 5rem;
+}
+
+/* ── Env strip ──────────────────────────── */
+.env-strip{
+  display:flex;flex-wrap:wrap;gap:0.4rem 1.25rem;
+  padding:0.55rem 0.875rem;
+  background:var(--surface);
+  border:1px solid var(--border);border-radius:4px;
+  margin-bottom:2.5rem;
+  font-family:var(--mono);font-size:0.65rem;color:var(--muted);
+}
+.env-item{display:flex;align-items:center;gap:0.35rem;}
+.env-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0;}
+
+/* ── Section ────────────────────────────── */
+section{margin-bottom:3rem;}
+
+.section-hdr{
+  display:flex;align-items:center;gap:0.75rem;
+  margin-bottom:1.25rem;
+}
+.section-eye{
+  font-family:var(--mono);font-size:0.6rem;font-weight:700;
+  letter-spacing:0.14em;text-transform:uppercase;color:var(--muted);
+  white-space:nowrap;
+}
+.section-title{
+  font-family:var(--mono);font-size:0.9rem;font-weight:600;
+  color:var(--text);white-space:nowrap;
+}
+.section-rule{flex:1;height:1px;background:var(--border);}
+
+/* ── RTT Hero ───────────────────────────── */
+.rtt-hero{
+  display:grid;grid-template-columns:repeat(3,1fr);
+  gap:1px;background:var(--border);
+  border:1px solid var(--border);border-radius:6px;overflow:hidden;
+  margin-bottom:1rem;
+}
+
+.rtt-card{
+  background:var(--surface);padding:1.5rem 1.25rem;
+  position:relative;overflow:hidden;
+}
+.rtt-card::after{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+}
+.rtt-card.c-noqos::after{background:var(--noqos);}
+.rtt-card.c-htb::after  {background:var(--htb);}
+.rtt-card.c-ebpf::after {background:var(--accent);}
+
+.rtt-qlabel{
+  font-family:var(--mono);font-size:0.6rem;font-weight:700;
+  letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.75rem;
+}
+.c-noqos .rtt-qlabel{color:var(--noqos);}
+.c-htb   .rtt-qlabel{color:var(--htb);}
+.c-ebpf  .rtt-qlabel{color:var(--accent);}
+
+.rtt-num{
+  font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-size:2.8rem;font-weight:700;line-height:1;margin-bottom:0.2rem;
+}
+.c-noqos .rtt-num{color:var(--noqos);}
+.c-htb   .rtt-num{color:var(--htb);}
+.c-ebpf  .rtt-num{color:var(--accent);}
+
+.rtt-unit{font-family:var(--mono);font-size:0.7rem;color:var(--muted);margin-bottom:0.6rem;}
+.rtt-desc{font-size:0.72rem;color:var(--muted);}
+
+.rtt-badge{
+  display:inline-block;margin-top:0.5rem;
+  font-family:var(--mono);font-size:0.6rem;font-weight:700;
+  letter-spacing:0.05em;padding:0.15rem 0.45rem;border-radius:3px;
+  background:rgba(0,221,176,0.1);color:var(--accent);
+  border:1px solid rgba(0,221,176,0.3);
+}
+
+.rtt-callout{
+  background:var(--surface);border:1px solid var(--border);
+  border-left:3px solid var(--accent);border-radius:4px;
+  padding:0.75rem 1rem;
+  font-family:var(--mono);font-size:0.72rem;color:var(--muted);
+  line-height:1.5;
+}
+.rtt-callout strong{color:var(--accent);}
+
+/* ── Legend ─────────────────────────────── */
+.legend{
+  display:flex;gap:1.25rem;margin-bottom:1rem;flex-wrap:wrap;
+}
+.legend-item{
+  display:flex;align-items:center;gap:0.35rem;
+  font-family:var(--mono);font-size:0.65rem;color:var(--muted);
+}
+.legend-swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
+
+/* ── Chart container ────────────────────── */
+.chart-wrap{
+  position:relative;width:100%;height:280px;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:4px;overflow:hidden;
+}
+canvas{display:block;width:100%;height:100%;}
+
+/* ── Data table ─────────────────────────── */
+.tbl-wrap{overflow-x:auto;}
+
+.dtbl{
+  width:100%;border-collapse:collapse;
+  font-family:var(--mono);font-size:0.73rem;
+  font-variant-numeric:tabular-nums;
+}
+.dtbl th{
+  background:var(--surface);color:var(--muted);
+  font-weight:700;letter-spacing:0.08em;text-transform:uppercase;
+  font-size:0.6rem;padding:0.6rem 1rem;text-align:left;
+  border-bottom:1px solid var(--border);white-space:nowrap;
+}
+.dtbl td{
+  padding:0.55rem 1rem;border-bottom:1px solid var(--border);
+  white-space:nowrap;
+}
+.dtbl tr:last-child td{border-bottom:none;}
+.dtbl tbody tr:hover td{background:var(--surface2);}
+
+.tag{
+  display:inline-block;
+  font-family:var(--mono);font-size:0.6rem;font-weight:700;
+  letter-spacing:0.05em;padding:0.1rem 0.4rem;border-radius:2px;
+}
+.tag-noqos{background:var(--noqos-dim);color:var(--noqos);border:1px solid var(--noqos-line);}
+.tag-htb  {background:var(--htb-dim);  color:var(--htb);  border:1px solid var(--htb-line);}
+.tag-ebpf {background:var(--accent-dim);color:var(--accent);border:1px solid var(--accent-line);}
+
+.pill{
+  display:inline-block;
+  font-family:var(--mono);font-size:0.65rem;font-weight:600;
+  padding:0.1rem 0.4rem;border-radius:3px;
+}
+.pill-good{background:rgba(52,211,153,0.1);color:var(--good);}
+.pill-warn{background:rgba(251,191,36,0.1);color:var(--warn);}
+.pill-bad {background:rgba(248,113,113,0.1);color:var(--bad);}
+.pill-dim {background:rgba(77,104,128,0.15);color:var(--muted);}
+
+.tc-ef{color:#dce8f4;}
+.tc-af{color:#8da8c4;}
+.tc-be{color:#5b7fa6;}
+
+/* ── CPU grid ───────────────────────────── */
+.cpu-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;
+}
+
+.cpu-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:4px;padding:1.25rem;
+}
+.cpu-card-label{
+  font-family:var(--mono);font-size:0.6rem;font-weight:700;
+  letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1rem;
+}
+.c-noqos .cpu-card-label{color:var(--noqos);}
+.c-htb   .cpu-card-label{color:var(--htb);}
+.c-ebpf  .cpu-card-label{color:var(--accent);}
+
+.cpu-big{
+  font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-size:2rem;font-weight:700;line-height:1;margin-bottom:0.2rem;
+}
+.c-noqos .cpu-big{color:var(--noqos);}
+.c-htb   .cpu-big{color:var(--htb);}
+.c-ebpf  .cpu-big{color:var(--bad);}
+
+.cpu-sub{font-size:0.68rem;color:var(--muted);margin-bottom:0.875rem;}
+
+.bar-rows{display:flex;flex-direction:column;gap:0.35rem;}
+.bar-row{display:flex;align-items:center;gap:0.45rem;font-family:var(--mono);font-size:0.63rem;}
+.bar-key{width:2.5rem;color:var(--muted);flex-shrink:0;}
+.bar-track{flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;}
+.bar-fill{height:100%;border-radius:2px;}
+.bar-val{width:2.8rem;text-align:right;color:var(--muted);}
+
+/* ── eBPF internals ─────────────────────── */
+.ebpf-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;
+}
+
+.ebpf-cls{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:4px;padding:1rem;
+}
+
+.ebpf-cls-name{
+  font-family:var(--mono);font-size:0.68rem;font-weight:700;
+  letter-spacing:0.1em;text-transform:uppercase;
+  padding-bottom:0.5rem;margin-bottom:0.75rem;
+  border-bottom:1px solid var(--border);
+}
+.ebpf-cls.ef .ebpf-cls-name{color:var(--accent);}
+.ebpf-cls.af .ebpf-cls-name{color:var(--htb);}
+.ebpf-cls.be .ebpf-cls-name{color:var(--noqos);}
+
+.ebpf-row{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:0.3rem 0;border-bottom:1px solid var(--border);
+  font-family:var(--mono);font-size:0.68rem;
+}
+.ebpf-row:last-child{border-bottom:none;}
+.ebpf-k{color:var(--muted);}
+.ebpf-v{font-variant-numeric:tabular-nums;color:var(--text);font-weight:600;}
+.ebpf-v.hi{color:var(--warn);}
+.ebpf-v.zero{color:var(--muted);}
+
+/* ── Findings ───────────────────────────── */
+.findings{display:flex;flex-direction:column;gap:0.75rem;}
+
+.finding{
+  display:flex;align-items:flex-start;gap:0.75rem;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:4px;padding:0.875rem 1rem;
+}
+
+.finding-icon{
+  font-family:var(--mono);font-size:0.58rem;font-weight:700;
+  letter-spacing:0.06em;padding:0.18rem 0.4rem;border-radius:2px;
+  flex-shrink:0;margin-top:0.12rem;
+}
+.fi-ebpf{background:var(--accent-dim);color:var(--accent);border:1px solid var(--accent-line);}
+.fi-htb {background:var(--htb-dim);   color:var(--htb);  border:1px solid var(--htb-line);}
+.fi-cost{background:rgba(248,113,113,0.1);color:var(--bad);border:1px solid rgba(248,113,113,0.25);}
+.fi-info{background:var(--noqos-dim); color:var(--noqos);border:1px solid var(--noqos-line);}
+
+.finding-text{font-size:0.8rem;color:var(--text);line-height:1.55;}
+.finding-text strong{font-family:var(--mono);font-weight:600;}
+
+/* ── Footer ─────────────────────────────── */
+footer{
+  border-top:1px solid var(--border);
+  padding:1.25rem 1.5rem;max-width:1100px;margin:0 auto;
+  font-family:var(--mono);font-size:0.62rem;color:var(--muted);
+  display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;
+}
+
+/* ── Responsive ─────────────────────────── */
+@media(max-width:680px){
+  .rtt-hero{grid-template-columns:1fr;}
+  .cpu-grid{grid-template-columns:1fr;}
+  .ebpf-grid{grid-template-columns:1fr;}
+  .rtt-num{font-size:2rem;}
+  .hdr-right{display:none;}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .bar-fill{transition:none;}
+  html{scroll-behavior:auto;}
+}
+</style>
+
+<!-- ─────────────────────────────────────────────────── -->
+
+<header class="site-header">
+  <div class="hdr-badge">eBPF</div>
+  <div class="hdr-title">QoS Comparative Performance Analysis</div>
+  <div class="hdr-right">
+    <span>TCP · iperf3 3.16</span>
+    <span>30s · 1 stream</span>
+    <span>Linux 6.8.0-124-generic</span>
+    <span>Jun 16 2026</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Env strip -->
+  <div class="env-strip">
+    <div class="env-item"><span class="env-dot"></span>Sender: 192.168.1.4 (bpf, 2 CPU)</div>
+    <div class="env-item"><span class="env-dot"></span>Receiver: 192.168.1.3 · port 5201/5202/5203</div>
+    <div class="env-item"><span class="env-dot"></span>Target: 500 Mbps (EF) · 300 Mbps (AF) · 200 Mbps (BE)</div>
+    <div class="env-item"><span class="env-dot"></span>TOS: EF=184 · AF=0 · BE=0</div>
+    <div class="env-item"><span class="env-dot"></span>Congestion: cubic</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SECTION 1: RTT Hero
+  ════════════════════════════════════════ -->
+  <section>
+    <div class="section-hdr">
+      <div class="section-eye">01</div>
+      <div class="section-title">Latency — EF Traffic Class (avg RTT)</div>
+      <div class="section-rule"></div>
+    </div>
+
+    <div class="rtt-hero">
+      <div class="rtt-card c-noqos">
+        <div class="rtt-qlabel">No QoS</div>
+        <div class="rtt-num">3,941</div>
+        <div class="rtt-unit">µs average RTT</div>
+        <div class="rtt-desc">No traffic classification.<br>All classes share bandwidth equally.</div>
+      </div>
+      <div class="rtt-card c-htb">
+        <div class="rtt-qlabel">HTB</div>
+        <div class="rtt-num">3,358</div>
+        <div class="rtt-unit">µs average RTT</div>
+        <div class="rtt-desc">Hierarchical Token Bucket.<br>14% lower latency vs No QoS.</div>
+      </div>
+      <div class="rtt-card c-ebpf">
+        <div class="rtt-qlabel">eBPF</div>
+        <div class="rtt-num">347</div>
+        <div class="rtt-unit">µs average RTT</div>
+        <div class="rtt-desc">XDP-based classifier.<br><span class="rtt-badge">11× lower than No QoS</span></div>
+      </div>
+    </div>
+
+    <div class="rtt-callout">
+      eBPF achieves <strong>347 µs</strong> average RTT for EF traffic — a <strong>10.8× improvement</strong> over No QoS (3,941 µs) and <strong>9.7× over HTB</strong> (3,358 µs).
+      This is the most dramatic performance gap in the study, demonstrating that kernel-bypass classification fundamentally changes latency characteristics for high-priority flows.
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════
+       SECTION 2: Throughput
+  ════════════════════════════════════════ -->
+  <section>
+    <div class="section-hdr">
+      <div class="section-eye">02</div>
+      <div class="section-title">Throughput Breakdown by Traffic Class</div>
+      <div class="section-rule"></div>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:var(--noqos)"></div>No QoS
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:var(--htb)"></div>HTB
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:var(--accent)"></div>eBPF
+      </div>
+      <div class="legend-item" style="margin-left:auto">
+        <div class="legend-swatch" style="background:rgba(255,255,255,0.18);border:1px dashed rgba(255,255,255,0.3)"></div>target rate
+      </div>
+    </div>
+
+    <div class="chart-wrap">
+      <canvas id="throughput-chart" aria-label="Grouped bar chart: throughput per traffic class per QoS type"></canvas>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════
+       SECTION 3: QoS Accuracy
+  ════════════════════════════════════════ -->
+  <section>
+    <div class="section-hdr">
+      <div class="section-eye">03</div>
+      <div class="section-title">QoS Accuracy — Actual vs Target Rate</div>
+      <div class="section-rule"></div>
+    </div>
+
+    <div class="tbl-wrap">
+      <table class="dtbl">
+        <thead>
+          <tr>
+            <th>QoS Method</th>
+            <th>Class</th>
+            <th>Target (Mbps)</th>
+            <th>Actual (Mbps)</th>
+            <th>Delta (Mbps)</th>
+            <th>Accuracy</th>
+            <th>Avg RTT</th>
+            <th>Max RTT</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- No QoS -->
+          <tr>
+            <td><span class="tag tag-noqos">No QoS</span></td>
+            <td class="tc-ef">EF</td>
+            <td>500</td><td>390.59</td><td>−109.41</td>
+            <td><span class="pill pill-warn">78.1%</span></td>
+            <td>3,941 µs</td><td>4,128 µs</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-noqos">No QoS</span></td>
+            <td class="tc-af">AF</td>
+            <td>300</td><td>283.79</td><td>−16.21</td>
+            <td><span class="pill pill-warn">94.6%</span></td>
+            <td>3,942 µs</td><td>4,141 µs</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-noqos">No QoS</span></td>
+            <td class="tc-be">BE</td>
+            <td>200</td><td>283.78</td><td>+83.78</td>
+            <td><span class="pill pill-dim">uncontrolled</span></td>
+            <td>3,944 µs</td><td>4,132 µs</td>
+          </tr>
+          <!-- HTB -->
+          <tr>
+            <td><span class="tag tag-htb">HTB</span></td>
+            <td class="tc-ef">EF</td>
+            <td>500</td><td>472.20</td><td>−27.80</td>
+            <td><span class="pill pill-warn">94.4%</span></td>
+            <td>3,358 µs</td><td>3,605 µs</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-htb">HTB</span></td>
+            <td class="tc-af">AF</td>
+            <td>300</td><td>285.99</td><td>−14.01</td>
+            <td><span class="pill pill-good">95.3%</span></td>
+            <td>3,867 µs</td><td>3,977 µs</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-htb">HTB</span></td>
+            <td class="tc-be">BE</td>
+            <td>200</td><td>191.57</td><td>−8.43</td>
+            <td><span class="pill pill-good">95.8%</span></td>
+            <td>5,680 µs</td><td>5,803 µs</td>
+          </tr>
+          <!-- eBPF -->
+          <tr>
+            <td><span class="tag tag-ebpf">eBPF</span></td>
+            <td class="tc-ef">EF</td>
+            <td>500</td><td>499.98</td><td>−0.02</td>
+            <td><span class="pill pill-good">≈100%</span></td>
+            <td>347 µs</td><td>615 µs</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-ebpf">eBPF</span></td>
+            <td class="tc-af">AF</td>
+            <td>300</td><td>40.89</td><td>−259.11</td>
+            <td><span class="pill pill-bad">13.6%</span></td>
+            <td>424 µs</td><td>862 µs</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-ebpf">eBPF</span></td>
+            <td class="tc-be">BE</td>
+            <td>200</td><td>40.86</td><td>−159.14</td>
+            <td><span class="pill pill-bad">20.4%</span></td>
+            <td>348 µs</td><td>774 µs</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════
+       SECTION 4: System Overhead
+  ════════════════════════════════════════ -->
+  <section>
+    <div class="section-hdr">
+      <div class="section-eye">04</div>
+      <div class="section-title">System Overhead — CPU &amp; TCP Retransmits</div>
+      <div class="section-rule"></div>
+    </div>
+
+    <div class="cpu-grid">
+      <div class="cpu-card c-noqos">
+        <div class="cpu-card-label">No QoS</div>
+        <div class="cpu-big">4.9<span style="font-size:1rem">%</span></div>
+        <div class="cpu-sub">avg CPU (usr + sys + soft)</div>
+        <div class="bar-rows">
+          <div class="bar-row">
+            <div class="bar-key">%usr</div>
+            <div class="bar-track"><div class="bar-fill" style="width:1.3%;background:var(--noqos)"></div></div>
+            <div class="bar-val">1.3%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%sys</div>
+            <div class="bar-track"><div class="bar-fill" style="width:3.6%;background:var(--noqos)"></div></div>
+            <div class="bar-val">3.6%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%soft</div>
+            <div class="bar-track"><div class="bar-fill" style="width:0%;background:var(--noqos)"></div></div>
+            <div class="bar-val">0.0%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%idle</div>
+            <div class="bar-track"><div class="bar-fill" style="width:100%;background:rgba(91,127,166,0.25)"></div></div>
+            <div class="bar-val" style="color:var(--good)">95.1%</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cpu-card c-htb">
+        <div class="cpu-card-label">HTB</div>
+        <div class="cpu-big">5.1<span style="font-size:1rem">%</span></div>
+        <div class="cpu-sub">avg CPU (usr + sys + soft)</div>
+        <div class="bar-rows">
+          <div class="bar-row">
+            <div class="bar-key">%usr</div>
+            <div class="bar-track"><div class="bar-fill" style="width:2%;background:var(--htb)"></div></div>
+            <div class="bar-val">2.0%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%sys</div>
+            <div class="bar-track"><div class="bar-fill" style="width:3.1%;background:var(--htb)"></div></div>
+            <div class="bar-val">3.1%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%soft</div>
+            <div class="bar-track"><div class="bar-fill" style="width:0%;background:var(--htb)"></div></div>
+            <div class="bar-val">0.0%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%idle</div>
+            <div class="bar-track"><div class="bar-fill" style="width:100%;background:rgba(245,158,11,0.18)"></div></div>
+            <div class="bar-val" style="color:var(--good)">94.9%</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cpu-card c-ebpf">
+        <div class="cpu-card-label">eBPF</div>
+        <div class="cpu-big">49.6<span style="font-size:1rem">%</span></div>
+        <div class="cpu-sub">avg CPU (usr + sys + soft) — 10× higher</div>
+        <div class="bar-rows">
+          <div class="bar-row">
+            <div class="bar-key">%usr</div>
+            <div class="bar-track"><div class="bar-fill" style="width:47.5%;background:var(--bad)"></div></div>
+            <div class="bar-val" style="color:var(--bad)">47.5%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%sys</div>
+            <div class="bar-track"><div class="bar-fill" style="width:2.1%;background:var(--bad)"></div></div>
+            <div class="bar-val">2.1%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%soft</div>
+            <div class="bar-track"><div class="bar-fill" style="width:0%;background:var(--bad)"></div></div>
+            <div class="bar-val">0.0%</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-key">%idle</div>
+            <div class="bar-track"><div class="bar-fill" style="width:50.4%;background:rgba(248,113,113,0.2)"></div></div>
+            <div class="bar-val" style="color:var(--warn)">50.4%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Retransmits sub-section -->
+    <div style="margin-top:1rem">
+      <div style="font-family:var(--mono);font-size:0.65rem;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.6rem;">
+        TCP Retransmits — total over 30s
+      </div>
+      <div class="tbl-wrap">
+        <table class="dtbl">
+          <thead>
+            <tr>
+              <th>Traffic Class</th>
+              <th>No QoS</th>
+              <th>HTB</th>
+              <th>eBPF</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="tc-ef">EF</td>
+              <td>0</td><td>0</td><td>0</td>
+              <td style="color:var(--muted);font-size:0.68rem;">All methods stable for high-priority flow</td>
+            </tr>
+            <tr>
+              <td class="tc-af">AF</td>
+              <td>0</td><td>0</td>
+              <td style="color:var(--bad);font-weight:700">11,602</td>
+              <td style="color:var(--muted);font-size:0.68rem;">eBPF congestion signalling causes TCP backoff</td>
+            </tr>
+            <tr>
+              <td class="tc-be">BE</td>
+              <td>0</td><td>0</td>
+              <td style="color:var(--bad);font-weight:700">14,085</td>
+              <td style="color:var(--muted);font-size:0.68rem;">Highest retransmit rate — severe throttling</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════
+       SECTION 5: eBPF Internals
+  ════════════════════════════════════════ -->
+  <section>
+    <div class="section-hdr">
+      <div class="section-eye">05</div>
+      <div class="section-title">eBPF Map Statistics — Per-Class Detail</div>
+      <div class="section-rule"></div>
+    </div>
+
+    <div class="ebpf-grid">
+      <div class="ebpf-cls ef">
+        <div class="ebpf-cls-name">EF — Expedited Forwarding</div>
+        <div class="ebpf-row"><div class="ebpf-k">packets</div><div class="ebpf-v">42,909</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">bytes</div><div class="ebpf-v">1,877,816,999</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">throughput</div><div class="ebpf-v" style="color:var(--accent)">500.75 Mbps</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">borrowed</div><div class="ebpf-v zero">0</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">ECN marked</div><div class="ebpf-v zero">0</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">delayed</div><div class="ebpf-v zero">0</div></div>
+      </div>
+      <div class="ebpf-cls af">
+        <div class="ebpf-cls-name">AF — Assured Forwarding</div>
+        <div class="ebpf-row"><div class="ebpf-k">packets</div><div class="ebpf-v">116,763</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">bytes</div><div class="ebpf-v">177,097,787</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">throughput</div><div class="ebpf-v" style="color:var(--warn)">47.23 Mbps</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">borrowed</div><div class="ebpf-v hi">5,043</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">ECN marked</div><div class="ebpf-v hi">6,179</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">delayed</div><div class="ebpf-v hi">25,205</div></div>
+      </div>
+      <div class="ebpf-cls be">
+        <div class="ebpf-cls-name">BE — Best Effort</div>
+        <div class="ebpf-row"><div class="ebpf-k">packets</div><div class="ebpf-v">119,119</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">bytes</div><div class="ebpf-v">180,599,919</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">throughput</div><div class="ebpf-v" style="color:var(--warn)">48.16 Mbps</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">borrowed</div><div class="ebpf-v hi">3,055</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">ECN marked</div><div class="ebpf-v hi">8,017</div></div>
+        <div class="ebpf-row"><div class="ebpf-k">delayed</div><div class="ebpf-v hi">32,417</div></div>
+      </div>
+    </div>
+    <div style="margin-top:0.75rem;font-family:var(--mono);font-size:0.65rem;color:var(--muted)">
+      ECN marked + delayed packets indicate active congestion management. EF class has no delay/borrowing — full token budget always available.
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════
+       SECTION 6: Key Findings
+  ════════════════════════════════════════ -->
+  <section>
+    <div class="section-hdr">
+      <div class="section-eye">06</div>
+      <div class="section-title">Key Findings</div>
+      <div class="section-rule"></div>
+    </div>
+
+    <div class="findings">
+      <div class="finding">
+        <div class="finding-icon fi-ebpf">eBPF</div>
+        <div class="finding-text">
+          <strong>EF throughput accuracy is near-perfect in eBPF</strong> — 499.98 Mbps vs a 500 Mbps target (0.004% error).
+          HTB achieves 472.2 Mbps (5.6% below target), while No QoS delivers only 390.6 Mbps as it competes with other classes.
+        </div>
+      </div>
+      <div class="finding">
+        <div class="finding-icon fi-ebpf">eBPF</div>
+        <div class="finding-text">
+          <strong>RTT improvement is the most striking result</strong> — eBPF reduces EF average RTT from 3,941 µs (No QoS) to 347 µs,
+          an 11× reduction. This suggests eBPF's classifier eliminates queueing delay for high-priority packets
+          far more aggressively than HTB's kernel-space token bucket.
+        </div>
+      </div>
+      <div class="finding">
+        <div class="finding-icon fi-htb">HTB</div>
+        <div class="finding-text">
+          <strong>HTB delivers the best overall fairness</strong> — all three classes hit within 5% of their targets
+          (EF 94.4%, AF 95.3%, BE 95.8%) with zero retransmits across all flows. No ECN marking or packet delay was observed.
+          HTB is the most predictable option when all classes must be served reliably.
+        </div>
+      </div>
+      <div class="finding">
+        <div class="finding-icon fi-cost">COST</div>
+        <div class="finding-text">
+          <strong>eBPF imposes a significant CPU penalty</strong> — 49.6% average CPU utilisation vs 5.1% for HTB and 4.9% for No QoS.
+          The iperf3 host CPU report shows 103.5% for the EF stream alone (saturating both cores).
+          In a production environment, this overhead limits scalability with this implementation.
+        </div>
+      </div>
+      <div class="finding">
+        <div class="finding-icon fi-cost">COST</div>
+        <div class="finding-text">
+          <strong>eBPF lower-priority classes suffer congestion collapse</strong> — AF and BE receive only ~41 Mbps each
+          (vs 300/200 Mbps targets). The 11,602 AF and 14,085 BE retransmits confirm that eBPF's strict token enforcement
+          causes TCP to repeatedly back off, suggesting the rate-limiting parameters need tuning for multi-class balance.
+        </div>
+      </div>
+      <div class="finding">
+        <div class="finding-icon fi-info">OBS</div>
+        <div class="finding-text">
+          <strong>eBPF ECN and delay counters confirm active congestion control</strong> — 14,196 ECN-marked packets and 57,622 delayed
+          events across AF and BE classes, with 8,098 borrow operations. EF class shows zero in all three counters,
+          confirming the strict priority hierarchy is functioning as designed.
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div>eBPF QoS Research · Krissana Pumpayom · KKU</div>
+  <div>Generated: 2026-06-30 · Data: iperf3 + sar + bpftool map dump</div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── Chart data ─────────────────────── */
+  const GROUPS   = ['EF', 'AF', 'BE'];
+  const SERIES   = ['No QoS', 'HTB', 'eBPF'];
+  const COLORS   = ['#5b7fa6', '#f59e0b', '#00ddb0'];
+  const TARGETS  = [500, 300, 200];
+
+  // values[groupIndex][seriesIndex]
+  const VALUES   = [
+    [390.59, 472.20, 499.98],  // EF
+    [283.79, 285.99,  40.89],  // AF
+    [283.78, 191.57,  40.86],  // BE
+  ];
+
+  /* ── Grouped bar chart (Canvas) ─────── */
+  function drawChart() {
+    const canvas = document.getElementById('throughput-chart');
+    if (!canvas) return;
+
+    const dpr  = window.devicePixelRatio || 1;
+    const W    = canvas.offsetWidth;
+    const H    = canvas.offsetHeight;
+    if (!W || !H) return;
+
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    const pad   = { top: 28, right: 20, bottom: 62, left: 62 };
+    const cW    = W - pad.left - pad.right;
+    const cH    = H - pad.top - pad.bottom;
+    const yMax  = 560;
+
+    const BG      = '#0c1420';
+    const BORDER  = '#1a2b40';
+    const MUTED   = '#4d6880';
+    const TEXT    = '#c8daea';
+
+    /* background */
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+
+    /* grid lines + y-axis labels */
+    const yTicks = [0, 100, 200, 300, 400, 500];
+    ctx.font = `10px ${getComputedStyle(document.body).getPropertyValue('--mono') || 'monospace'}`;
+    yTicks.forEach(tick => {
+      const y = pad.top + cH - (tick / yMax) * cH;
+      ctx.strokeStyle = tick === 0 ? '#263d52' : BORDER;
+      ctx.lineWidth   = tick === 0 ? 1.5 : 1;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(pad.left + cW, y);
+      ctx.stroke();
+
+      ctx.fillStyle   = MUTED;
+      ctx.textAlign   = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(tick === 0 ? '0' : String(tick), pad.left - 8, y);
+    });
+
+    /* y-axis unit label */
+    ctx.save();
+    ctx.translate(14, pad.top + cH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = MUTED;
+    ctx.fillText('Mbps', 0, 0);
+    ctx.restore();
+
+    /* bars */
+    const groupW  = cW / GROUPS.length;
+    const barPad  = 0.22;
+    const barArea = groupW * (1 - barPad);
+    const barW    = barArea / SERIES.length;
+    const gOffset = (groupW * barPad) / 2;
+    const r       = 2;
+
+    GROUPS.forEach((group, gi) => {
+      const gx = pad.left + gi * groupW;
+
+      /* target dashed line */
+      const ty = pad.top + cH - (TARGETS[gi] / yMax) * cH;
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineWidth   = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(gx + gOffset * 0.5, ty);
+      ctx.lineTo(gx + groupW - gOffset * 0.5, ty);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      /* target value annotation */
+      ctx.fillStyle   = 'rgba(255,255,255,0.25)';
+      ctx.textAlign   = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.font        = '9px monospace';
+      ctx.fillText(String(TARGETS[gi]), gx + groupW - gOffset * 0.5 - 3, ty - 7);
+
+      /* series bars */
+      SERIES.forEach((series, si) => {
+        const val = VALUES[gi][si];
+        const bh  = Math.max(0, (val / yMax) * cH);
+        const bx  = gx + gOffset + si * barW;
+        const by  = pad.top + cH - bh;
+
+        ctx.fillStyle   = COLORS[si];
+        ctx.globalAlpha = 0.8;
+
+        /* rounded top corners */
+        ctx.beginPath();
+        if (bh > r * 2) {
+          ctx.moveTo(bx + r, by);
+          ctx.lineTo(bx + barW - 2 - r, by);
+          ctx.quadraticCurveTo(bx + barW - 2, by, bx + barW - 2, by + r);
+          ctx.lineTo(bx + barW - 2, by + bh);
+          ctx.lineTo(bx, by + bh);
+          ctx.lineTo(bx, by + r);
+          ctx.quadraticCurveTo(bx, by, bx + r, by);
+        } else {
+          ctx.rect(bx, by, barW - 2, bh);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        /* value label */
+        if (bh > 14 && barW > 26) {
+          ctx.font        = 'bold 9px monospace';
+          ctx.textAlign   = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillStyle   = COLORS[si];
+          ctx.globalAlpha = 0.9;
+          ctx.fillText(val.toFixed(1), bx + (barW - 2) / 2, by - 2);
+          ctx.globalAlpha = 1;
+        }
+      });
+
+      /* group label */
+      ctx.font         = 'bold 11px monospace';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle    = TEXT;
+      ctx.fillText(group, gx + groupW / 2, pad.top + cH + 10);
+
+      /* target sub-label */
+      ctx.font      = '9px monospace';
+      ctx.fillStyle = MUTED;
+      ctx.fillText('target ' + TARGETS[gi] + ' Mbps', gx + groupW / 2, pad.top + cH + 26);
+    });
+
+    /* legend strip at bottom-right */
+    const legendX = pad.left + cW - 180;
+    const legendY = pad.top + cH + 46;
+    SERIES.forEach((s, i) => {
+      const x = legendX + i * 65;
+      ctx.fillStyle = COLORS[i];
+      ctx.fillRect(x, legendY, 8, 8);
+      ctx.font      = '9px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = MUTED;
+      ctx.fillText(s, x + 11, legendY + 4);
+    });
+  }
+
+  /* ── Animate CPU bars ───────────────── */
+  function initBars() {
+    document.querySelectorAll('.bar-fill').forEach(el => {
+      const target = el.style.width;
+      el.style.width = '0%';
+      el.style.transition = 'width 0.8s cubic-bezier(0.16,1,0.3,1)';
+      setTimeout(() => { el.style.width = target; }, 200);
+    });
+  }
+
+  /* ── Init ───────────────────────────── */
+  document.addEventListener('DOMContentLoaded', () => {
+    requestAnimationFrame(() => {
+      drawChart();
+      initBars();
+    });
+  });
+
+  /* Redraw on resize */
+  let resizeTimer;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(drawChart, 150);
+  });
+})();
+</script>
