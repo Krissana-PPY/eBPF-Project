@@ -43,10 +43,14 @@ function detectFileType(filename) {
 
 // ── iperf3 JSON parser ──────────────────────────────────────────────────────
 function parseIperf(text) {
-  const data = JSON.parse(text);
-  const end  = data.end || {};
-  const sent = end.sum_sent || {};
-  const cpu  = end.cpu_utilization_percent || {};
+  const data     = JSON.parse(text);
+  const end      = data.end || {};
+  // Use sum_received: eBPF shaping acts at client egress so the server
+  // receiver side reflects the true post-shaping throughput.
+  // Retransmits remain sender-side; fall back to sum_sent when sum_received absent (UDP).
+  const received = end.sum_received || {};
+  const sent     = end.sum_sent     || {};
+  const cpu      = end.cpu_utilization_percent || {};
 
   const intervals = (data.intervals || []).map(iv => {
     const s   = (iv.streams || [])[0] || {};
@@ -57,25 +61,24 @@ function parseIperf(text) {
       bytes:         sum.bytes,
       bitsPerSecond: sum.bits_per_second,
       retransmits:   sum.retransmits || 0,
-      rttUs:         s.rtt,
+      rttUs:         s.rtt,             // TCP RTT measured at sender via ACK — intentionally sender-side
     };
   });
 
-  const rtts  = intervals.map(i => i.rttUs).filter(Boolean);
-  const bpss  = intervals.map(i => i.bitsPerSecond).filter(Boolean);
+  const rtts = intervals.map(i => i.rttUs).filter(Boolean);
 
   return {
     summary: {
-      throughputMbps:  sent.bits_per_second / 1e6 || 0,
+      throughputMbps:  (received.bits_per_second || sent.bits_per_second) / 1e6 || 0,
       avgRttUs:        mean(rtts),
       maxRttUs:        Math.max(...rtts, 0),
       minRttUs:        Math.min(...rtts, Infinity) === Infinity ? 0 : Math.min(...rtts),
       rttStdUs:        std(rtts),
-      retransmits:     sent.retransmits || 0,
-      durationS:       sent.seconds || 0,
-      cpuHostTotal:    cpu.host_total || 0,
-      cpuHostUser:     cpu.host_user || 0,
-      cpuHostSystem:   cpu.host_system || 0,
+      retransmits:     sent.retransmits || 0,   // retransmits are a sender metric
+      durationS:       (received.seconds || sent.seconds) || 0,
+      cpuHostTotal:    cpu.host_total   || 0,
+      cpuHostUser:     cpu.host_user    || 0,
+      cpuHostSystem:   cpu.host_system  || 0,
       cpuRemoteTotal:  cpu.remote_total || 0,
     },
     intervals,
