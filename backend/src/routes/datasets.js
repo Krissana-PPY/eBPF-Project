@@ -46,18 +46,27 @@ router.get('/:id', async (req, res, next) => {
 
     const dataset = dsRes.rows[0];
 
-    // iperf summaries
+    // detect which protocols exist in this dataset
+    const protoRes = await pool.query(
+      `SELECT DISTINCT COALESCE(protocol, 'tcp') AS protocol FROM experiments WHERE dataset_id = $1`, [id]
+    );
+    const protocols = protoRes.rows.map(r => r.protocol);
+    // use first protocol found (prefer tcp), or null for mixed/unknown
+    const primaryProto = protocols.includes('tcp') ? 'tcp' : (protocols[0] || null);
+
+    // iperf summaries — filter by primary protocol to avoid TCP/UDP mixing
     const iperfRes = await pool.query(
-      `SELECT e.qos_type, e.traffic_class, s.*
+      `SELECT e.qos_type, e.protocol, e.traffic_class, s.*
        FROM iperf_summary s
        JOIN experiments e ON e.id = s.experiment_id
-       WHERE e.dataset_id = $1`,
-      [id]
+       WHERE e.dataset_id = $1
+         AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`,
+      [id, primaryProto]
     );
 
-    // cpu snapshots — aggregate per qos
+    // cpu snapshots — aggregate per qos+protocol
     const cpuRes = await pool.query(
-      `SELECT e.qos_type,
+      `SELECT e.qos_type, e.protocol,
               AVG(c.usr_pct)::float  AS avg_usr,
               AVG(c.sys_pct)::float  AS avg_sys,
               AVG(c.soft_pct)::float AS avg_soft,
@@ -66,8 +75,9 @@ router.get('/:id', async (req, res, next) => {
        FROM cpu_snapshots c
        JOIN experiments e ON e.id = c.experiment_id
        WHERE e.dataset_id = $1
-       GROUP BY e.qos_type`,
-      [id]
+         AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))
+       GROUP BY e.qos_type, e.protocol`,
+      [id, primaryProto]
     );
 
     // HTB tc classes
@@ -75,8 +85,9 @@ router.get('/:id', async (req, res, next) => {
       `SELECT h.*
        FROM htb_class_stats h
        JOIN experiments e ON e.id = h.experiment_id
-       WHERE e.dataset_id = $1`,
-      [id]
+       WHERE e.dataset_id = $1
+         AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`,
+      [id, primaryProto]
     );
 
     // eBPF map stats
@@ -84,19 +95,21 @@ router.get('/:id', async (req, res, next) => {
       `SELECT m.*
        FROM ebpf_class_stats m
        JOIN experiments e ON e.id = m.experiment_id
-       WHERE e.dataset_id = $1`,
-      [id]
+       WHERE e.dataset_id = $1
+         AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`,
+      [id, primaryProto]
     );
 
     // iperf intervals for time series
     const intervalRes = await pool.query(
-      `SELECT e.qos_type, e.traffic_class, i.interval_start, i.interval_end,
+      `SELECT e.qos_type, e.protocol, e.traffic_class, i.interval_start, i.interval_end,
               i.bits_per_second, i.rtt_us, i.retransmits
        FROM iperf_intervals i
        JOIN experiments e ON e.id = i.experiment_id
        WHERE e.dataset_id = $1
+         AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))
        ORDER BY e.qos_type, e.traffic_class, i.interval_start`,
-      [id]
+      [id, primaryProto]
     );
 
     // build metrics object keyed by qos_type
@@ -177,7 +190,7 @@ router.get('/:id', async (req, res, next) => {
       });
     }
 
-    res.json({ ...dataset, metrics, timeSeries });
+    res.json({ ...dataset, protocols, primaryProtocol: primaryProto, metrics, timeSeries });
   } catch (err) { next(err); }
 });
 

@@ -46,9 +46,9 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
 
         // insert experiment record
         const expRes = await client.query(
-          `INSERT INTO experiments (dataset_id, qos_type, traffic_class, experiment_type, source_filename)
-           VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-          [datasetId, meta.qosType, meta.trafficClass, meta.experimentType, file.originalname]
+          `INSERT INTO experiments (dataset_id, qos_type, protocol, traffic_class, experiment_type, source_filename)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+          [datasetId, meta.qosType, meta.protocol || null, meta.trafficClass, meta.experimentType, file.originalname]
         );
         const expId = expRes.rows[0].id;
 

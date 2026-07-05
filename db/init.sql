@@ -8,13 +8,14 @@ CREATE TABLE IF NOT EXISTS datasets (
 );
 
 CREATE TABLE IF NOT EXISTS experiments (
-    id             SERIAL PRIMARY KEY,
-    dataset_id     INTEGER NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
-    qos_type       VARCHAR(20)  NOT NULL,  -- 'no_qos' | 'htb' | 'ebpf'
-    traffic_class  VARCHAR(10),            -- 'ef' | 'af' | 'be' | NULL
-    experiment_type VARCHAR(30) NOT NULL,  -- 'iperf' | 'cpu' | 'htb_tc' | 'ebpf_map'
+    id              SERIAL PRIMARY KEY,
+    dataset_id      INTEGER NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+    qos_type        VARCHAR(20)  NOT NULL,  -- 'no_qos' | 'htb' | 'ebpf'
+    protocol        VARCHAR(10),            -- 'tcp' | 'udp' | NULL
+    traffic_class   VARCHAR(10),            -- 'ef' | 'af' | 'be' | NULL
+    experiment_type VARCHAR(30)  NOT NULL,  -- 'iperf' | 'cpu' | 'htb_tc' | 'ebpf_map'
     source_filename VARCHAR(500),
-    created_at     TIMESTAMPTZ  DEFAULT NOW()
+    created_at      TIMESTAMPTZ  DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS iperf_summary (

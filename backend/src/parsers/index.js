@@ -7,6 +7,7 @@ function detectFileType(filename) {
   const name = filename.replace(/\s*\(\d+\)\s*/g, '').toLowerCase().trim();
   const QOS  = ['no_qos', 'htb', 'ebpf'];
   const TC   = ['ef', 'af', 'be'];
+  const PROTO = ['tcp', 'udp'];
 
   let qosType = null;
   for (const q of QOS.sort((a, b) => b.length - a.length)) {
@@ -14,19 +15,27 @@ function detectFileType(filename) {
   }
   if (!qosType) return null;
 
+  // detect protocol (tcp/udp) from filename
+  let protocol = null;
+  for (const p of PROTO) {
+    if (name.includes('_' + p + '_') || name.includes('_' + p + '.')) {
+      protocol = p; break;
+    }
+  }
+
   if (name.includes('ebpf_stats') && name.endsWith('.json'))
-    return { qosType, trafficClass: null, experimentType: 'ebpf_map' };
+    return { qosType, protocol, trafficClass: null, experimentType: 'ebpf_map' };
 
   if (name.includes('tc_stats') && name.endsWith('.txt'))
-    return { qosType, trafficClass: null, experimentType: 'htb_tc' };
+    return { qosType, protocol, trafficClass: null, experimentType: 'htb_tc' };
 
   if (name.includes('cpu') && name.endsWith('.txt'))
-    return { qosType, trafficClass: null, experimentType: 'cpu' };
+    return { qosType, protocol, trafficClass: null, experimentType: 'cpu' };
 
-  // iperf JSON: {qos}_tcp_{class}.json
+  // iperf JSON: {qos}_{proto}_{class}.json
   for (const tc of TC) {
     if (name.endsWith(`_${tc}.json`) || name.includes(`_${tc}.`))
-      return { qosType, trafficClass: tc, experimentType: 'iperf' };
+      return { qosType, protocol, trafficClass: tc, experimentType: 'iperf' };
   }
 
   return null;
