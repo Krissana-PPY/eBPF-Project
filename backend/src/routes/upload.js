@@ -14,7 +14,7 @@ const MAX_MB     = parseInt(process.env.MAX_FILE_SIZE_MB || '200');
 const storage = multer.memoryStorage();
 const upload  = multer({
   storage,
-  limits: { fileSize: MAX_MB * 1024 * 1024, files: 20 },
+  limits: { fileSize: MAX_MB * 1024 * 1024, files: 100 },
   fileFilter: (req, file, cb) => {
     const ok = /\.(json|txt)$/i.test(file.originalname);
     cb(ok ? null : new Error(`Only .json and .txt files accepted: ${file.originalname}`), ok);
