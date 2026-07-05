@@ -207,15 +207,26 @@ router.get('/:id/mode/:qosType', async (req, res, next) => {
     if (!dsRes.rows.length) return res.status(404).json({ error: 'Dataset not found' });
     const dataset = dsRes.rows[0];
 
+    // Detect primary protocol (prefer tcp) to avoid mixing TCP/UDP iperf data
+    const protoRes = await pool.query(
+      `SELECT DISTINCT protocol FROM experiments WHERE dataset_id = $1 AND qos_type = $2 AND protocol IS NOT NULL`,
+      [id, qosType]
+    );
+    const protos = protoRes.rows.map(r => r.protocol);
+    const primaryProto = protos.includes('tcp') ? 'tcp' : (protos[0] || null);
+
     const [iperfRes, intervalsRes, cpuRes, htbRes, ebpfRes] = await Promise.all([
       pool.query(
         `SELECT e.traffic_class, s.*
          FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id
-         WHERE e.dataset_id = $1 AND e.qos_type = $2`, [id, qosType]),
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))`, [id, qosType, primaryProto]),
       pool.query(
         `SELECT e.traffic_class, i.*
          FROM iperf_intervals i JOIN experiments e ON e.id = i.experiment_id
-         WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY e.traffic_class, i.interval_start`, [id, qosType]),
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
+         ORDER BY e.traffic_class, i.interval_start`, [id, qosType, primaryProto]),
       pool.query(
         `SELECT c.* FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
          WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY c.id`, [id, qosType]),
@@ -281,15 +292,30 @@ router.get('/:id/mode/:qosType/report', async (req, res, next) => {
     return res.status(400).json({ error: 'qosType must be no_qos | htb | ebpf' });
 
   try {
-    // Re-use the mode data logic
-    const fakeReq = { params: { id: req.params.id, qosType } };
     const dsRes = await pool.query('SELECT * FROM datasets WHERE id = $1', [id]);
     if (!dsRes.rows.length) return res.status(404).json({ error: 'Dataset not found' });
     const dataset = dsRes.rows[0];
 
+    // Detect primary protocol (prefer tcp) to avoid mixing TCP/UDP iperf data
+    const protoRes2 = await pool.query(
+      `SELECT DISTINCT protocol FROM experiments WHERE dataset_id = $1 AND qos_type = $2 AND protocol IS NOT NULL`,
+      [id, qosType]
+    );
+    const protos2 = protoRes2.rows.map(r => r.protocol);
+    const primaryProto2 = protos2.includes('tcp') ? 'tcp' : (protos2[0] || null);
+
     const [iperfRes, intervalsRes, cpuRes, htbRes, ebpfRes] = await Promise.all([
-      pool.query(`SELECT e.traffic_class, s.* FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id WHERE e.dataset_id = $1 AND e.qos_type = $2`, [id, qosType]),
-      pool.query(`SELECT e.traffic_class, i.* FROM iperf_intervals i JOIN experiments e ON e.id = i.experiment_id WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY e.traffic_class, i.interval_start`, [id, qosType]),
+      pool.query(
+        `SELECT e.traffic_class, s.* FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))`,
+        [id, qosType, primaryProto2]),
+      pool.query(
+        `SELECT e.traffic_class, i.* FROM iperf_intervals i JOIN experiments e ON e.id = i.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
+         ORDER BY e.traffic_class, i.interval_start`,
+        [id, qosType, primaryProto2]),
       pool.query(`SELECT c.* FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY c.id`, [id, qosType]),
       pool.query(`SELECT h.* FROM htb_class_stats h JOIN experiments e ON e.id = h.experiment_id WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY h.class_id`, [id, qosType]),
       pool.query(`SELECT m.* FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY m.class_key`, [id, qosType]),

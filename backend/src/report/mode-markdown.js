@@ -189,9 +189,9 @@ function buildModeMarkdown(mode) {
       lines.push(row([c.class_name, fmtK(c.packets), fmtK(c.bytes), fmt(mbps), fmtK(c.borrowed), fmtK(c.ecn_marked), fmtK(c.delayed)]));
     }
     lines.push('');
-    const totalEcn = ebpfClasses.reduce((s, c) => s + (c.ecn_marked || 0), 0);
-    const totalDly = ebpfClasses.reduce((s, c) => s + (c.delayed    || 0), 0);
-    const totalBor = ebpfClasses.reduce((s, c) => s + (c.borrowed   || 0), 0);
+    const totalEcn = ebpfClasses.reduce((s, c) => s + (Number(c.ecn_marked) || 0), 0);
+    const totalDly = ebpfClasses.reduce((s, c) => s + (Number(c.delayed)    || 0), 0);
+    const totalBor = ebpfClasses.reduce((s, c) => s + (Number(c.borrowed)   || 0), 0);
     lines.push(row(['Counter', 'Total', 'Meaning']));
     lines.push(sep(3));
     lines.push(row(['ECN Marked', fmtK(totalEcn), totalEcn > 0 ? 'Active congestion signalling' : 'No marks']));
@@ -258,7 +258,7 @@ function buildModeMarkdown(mode) {
       conclusions.push(`**Latency priority**: EF RTT ${fmt(efRtt, 0)} µs, BE RTT ${fmt(beRtt, 0)} µs — eBPF XDP scheduler is providing priority queuing at the kernel level.`);
     if (efMbps > 400)
       conclusions.push(`**High-priority throughput**: EF class achieved ${fmt(efMbps)} Mbps — near line-rate for latency-sensitive traffic.`);
-    const totalEcn = ebpfClasses.reduce((s, c) => s + (c.ecn_marked || 0), 0);
+    const totalEcn = ebpfClasses.reduce((s, c) => s + (Number(c.ecn_marked) || 0), 0);
     if (totalEcn > 0)
       conclusions.push(`**Congestion management**: ${fmtK(totalEcn)} ECN marks across all classes — eBPF is actively signalling congestion without dropping packets.`);
     const cpuTotal = cpu.snapshots?.length

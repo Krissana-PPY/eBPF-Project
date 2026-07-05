@@ -188,9 +188,9 @@ function buildExpMarkdown(exp) {
       lines.push(row([c.class_name, c.class_key, fmtK(c.packets), fmtK(c.bytes), fmt(mbps), fmtK(c.borrowed), fmtK(c.ecn_marked), fmtK(c.delayed)]));
     }
     lines.push('');
-    const totalEcn = exp.ebpfClasses.reduce((s, c) => s + (c.ecn_marked || 0), 0);
-    const totalDly = exp.ebpfClasses.reduce((s, c) => s + (c.delayed    || 0), 0);
-    const totalBor = exp.ebpfClasses.reduce((s, c) => s + (c.borrowed   || 0), 0);
+    const totalEcn = exp.ebpfClasses.reduce((s, c) => s + (Number(c.ecn_marked) || 0), 0);
+    const totalDly = exp.ebpfClasses.reduce((s, c) => s + (Number(c.delayed)    || 0), 0);
+    const totalBor = exp.ebpfClasses.reduce((s, c) => s + (Number(c.borrowed)   || 0), 0);
     lines.push('**Totals:**');
     lines.push('');
     lines.push(row(['Metric', 'Total', 'Interpretation']));

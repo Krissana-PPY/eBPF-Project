@@ -81,7 +81,7 @@ function buildMarkdown(ds) {
 
   const ebpfMap = m.ebpf?.mapStats;
   if (ebpfMap) {
-    const totalEcn = Object.values(ebpfMap).reduce((s, c) => s + (c.ecnMarked || 0), 0);
+    const totalEcn = Object.values(ebpfMap).reduce((s, c) => s + (Number(c.ecnMarked) || 0), 0);
     if (totalEcn > 0) findings.push(`eBPF performed **${fmtK(totalEcn)} ECN marks** for active congestion management.`);
   }
 
@@ -295,8 +295,8 @@ function buildMarkdown(ds) {
     conclusions.push(`**CPU overhead**: eBPF adds ${overhead}% CPU vs No QoS — ${judgement}.`);
   }
   if (ebpfMap) {
-    const totalEcn = Object.values(ebpfMap).reduce((s, c) => s + (c.ecnMarked || 0), 0);
-    const totalDly = Object.values(ebpfMap).reduce((s, c) => s + (c.delayed || 0), 0);
+    const totalEcn = Object.values(ebpfMap).reduce((s, c) => s + (Number(c.ecnMarked) || 0), 0);
+    const totalDly = Object.values(ebpfMap).reduce((s, c) => s + (Number(c.delayed)   || 0), 0);
     if (totalEcn > 0 || totalDly > 0)
       conclusions.push(`**Congestion control**: ${fmtK(totalEcn)} ECN marks and ${fmtK(totalDly)} delayed events confirm the eBPF scheduler is actively managing congestion.`);
   }
