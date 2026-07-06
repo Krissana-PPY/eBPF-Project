@@ -450,7 +450,7 @@ export default function DatasetPage() {
             <table className="w-full border-collapse font-mono text-xs">
               <thead>
                 <tr className="bg-surface border-b border-border">
-                  {['Mode','Class','Sent Mbps','Rcv Mbps','DR%','RTT min','RTT avg','RTT max','Retx','CPU Host'].map(h => (
+                  {['Mode','Class','Sent Mbps','Rcv Mbps','DR%','RTT min','RTT avg','RTT max','σ RTT','Retx','CWND (B)','CPU Sender','CPU Rcvr'].map(h => (
                     <th key={h} className="px-2 py-2 text-muted uppercase tracking-wider text-xs font-bold whitespace-nowrap first:pl-3">{h}</th>
                   ))}
                 </tr>
@@ -466,12 +466,15 @@ export default function DatasetPage() {
                       <td className="px-2 py-1.5 font-bold" style={{ color: C[tc as keyof typeof C] }}>{TC_LABEL[tc]}</td>
                       <td className="px-2 py-1.5 text-muted">{fmt(d.sentThroughputMbps)}</td>
                       <td className="px-2 py-1.5 text-textdim font-semibold">{fmt(d.throughputMbps)}</td>
-                      <td className="px-2 py-1.5 text-textdim">{fmt(d.deliveryRatio,1)}%</td>
-                      <td className="px-2 py-1.5 text-muted">{fmtK(d.minRttUs)} µs</td>
-                      <td className="px-2 py-1.5 font-semibold" style={{ color: rtt<500?C.ebpf:rtt>3000?'#ef4444':'#c8daea' }}>{fmtK(d.avgRttUs)} µs</td>
-                      <td className="px-2 py-1.5 text-muted">{fmtK(d.maxRttUs)} µs</td>
+                      <td className="px-2 py-1.5 text-textdim">{d.deliveryRatio!=null?fmt(d.deliveryRatio,1)+'%':'—'}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.minRttUs?fmtK(d.minRttUs)+' µs':'—'}</td>
+                      <td className="px-2 py-1.5 font-semibold" style={{ color: rtt<500?C.ebpf:rtt>3000?'#ef4444':'#c8daea' }}>{d.avgRttUs?fmtK(d.avgRttUs)+' µs':'—'}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.maxRttUs?fmtK(d.maxRttUs)+' µs':'—'}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.rttStdUs?fmtK(Math.round(d.rttStdUs))+' µs':'—'}</td>
                       <td className="px-2 py-1.5" style={{ color: (d.retransmits||0)>0?'#ef4444':'#4d6880' }}>{fmtK(d.retransmits)}</td>
-                      <td className="px-2 py-1.5 text-muted">{fmt(d.cpuHostTotal)}%</td>
+                      <td className="px-2 py-1.5 text-muted">{d.maxSndCwnd?fmtK(d.maxSndCwnd):'—'}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.cpuHostUser!=null?`${fmt(d.cpuHostUser,1)}u/${fmt(d.cpuHostSystem,1)}s`:'—'}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.cpuRemoteTotal!=null?`${fmt(d.cpuRemoteTotal,1)}%`:'—'}</td>
                     </tr>
                   );
                 }))}
@@ -517,7 +520,7 @@ export default function DatasetPage() {
             <table className="w-full border-collapse font-mono text-xs">
               <thead>
                 <tr className="bg-surface border-b border-border">
-                  {['Mode','Class','Sent Mbps','Rcv Mbps','Delivery Ratio','CPU Host'].map(h => (
+                  {['Mode','Class','Sent Mbps','Sent Pkts','Rcv Mbps','Rcv Pkts','Lost Pkts','Loss%','DR%','Jitter ms','CPU Sender','CPU Rcvr'].map(h => (
                     <th key={h} className="px-2 py-2 text-muted uppercase tracking-wider text-xs font-bold whitespace-nowrap first:pl-3">{h}</th>
                   ))}
                 </tr>
@@ -526,16 +529,24 @@ export default function DatasetPage() {
                 {MODE_KEYS.flatMap(q => TC_KEYS.map(tc => {
                   const d = udp[q]?.[tc] as any;
                   if (!d) return null;
-                  const dr = d.deliveryRatio ?? 0;
-                  const drC = dr>=90?C.ebpf:dr>=70?C.htb:'#ef4444';
+                  const dr  = d.deliveryRatio ?? 0;
+                  const drC = dr>=95?C.ebpf:dr>=75?'#c8daea':dr>=50?C.htb:'#ef4444';
+                  const lp  = d.lostPercent as number | null;
+                  const lpC = lp==null?'#4d6880':lp<5?C.ebpf:lp<20?'#c8daea':lp<50?C.htb:'#ef4444';
                   return (
                     <tr key={`${q}${tc}`} className="border-b border-border hover:bg-surface">
                       <td className="pl-3 pr-2 py-1.5"><span className={`tag tag-${q==='no_qos'?'noqos':q}`}>{MODE_LABEL[q]}</span></td>
                       <td className="px-2 py-1.5 font-bold" style={{ color: C[tc as keyof typeof C] }}>{TC_LABEL[tc]}</td>
                       <td className="px-2 py-1.5 text-muted">{fmt(d.sentThroughputMbps)}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.sentPackets!=null?fmtK(d.sentPackets):'—'}</td>
                       <td className="px-2 py-1.5 text-textdim font-semibold">{fmt(d.throughputMbps)}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.rcvPackets!=null?fmtK(d.rcvPackets):'—'}</td>
+                      <td className="px-2 py-1.5" style={{ color: (d.lostPackets||0)>0?'#ef4444':'#4d6880' }}>{d.lostPackets!=null?fmtK(d.lostPackets):'—'}</td>
+                      <td className="px-2 py-1.5 font-semibold" style={{ color: lpC }}>{lp!=null?fmt(lp,2)+'%':'—'}</td>
                       <td className="px-2 py-1.5 font-semibold" style={{ color: drC }}>{fmt(dr,1)}%</td>
-                      <td className="px-2 py-1.5 text-muted">{fmt(d.cpuHostTotal)}%</td>
+                      <td className="px-2 py-1.5 text-muted">{d.jitterMs!=null?fmt(d.jitterMs,3):'—'}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.cpuHostUser!=null?`${fmt(d.cpuHostUser,1)}u/${fmt(d.cpuHostSystem,1)}s`:'—'}</td>
+                      <td className="px-2 py-1.5 text-muted">{d.cpuRemoteTotal!=null?`${fmt(d.cpuRemoteTotal,1)}%`:'—'}</td>
                     </tr>
                   );
                 }))}
@@ -557,7 +568,7 @@ export default function DatasetPage() {
             <table className="w-full border-collapse font-mono text-xs">
               <thead>
                 <tr className="bg-surface border-b border-border">
-                  {['Mode','Proto','usr %','sys %','softirq %','idle %','Active Total'].map(h => (
+                  {['Mode','Proto','usr %','sys %','iowait %','softirq %','idle %','Active Total'].map(h => (
                     <th key={h} className="px-2 py-2 text-muted uppercase tracking-wider text-xs font-bold first:pl-3">{h}</th>
                   ))}
                 </tr>
@@ -572,8 +583,9 @@ export default function DatasetPage() {
                       <tr key={`${p}${q}`} className="border-b border-border hover:bg-surface">
                         <td className="pl-3 pr-2 py-1.5"><span className={`tag tag-${q==='no_qos'?'noqos':q}`}>{MODE_LABEL[q]}</span></td>
                         <td className="px-2 py-1.5 text-muted font-bold uppercase">{p}</td>
-                        <td className="px-2 py-1.5" style={{ color: cpu.avgUsr>20?'#ef4444':'#c8daea' }}>{fmt(cpu.avgUsr,2)}</td>
+                        <td className="px-2 py-1.5" style={{ color: (cpu.avgUsr||0)>20?'#ef4444':'#c8daea' }}>{fmt(cpu.avgUsr,2)}</td>
                         <td className="px-2 py-1.5 text-textdim">{fmt(cpu.avgSys,2)}</td>
+                        <td className="px-2 py-1.5 text-muted">{fmt(cpu.avgIowait,2)}</td>
                         <td className="px-2 py-1.5 text-textdim">{fmt(cpu.avgSoft,2)}</td>
                         <td className="px-2 py-1.5 text-muted">{fmt(cpu.avgIdle,2)}</td>
                         <td className="px-2 py-1.5 font-semibold" style={{ color: tot>80?'#ef4444':tot>50?'#f59e0b':C.ebpf }}>{fmt(tot,2)}%</td>

@@ -146,7 +146,10 @@ function ProtocolSection({
         <table className="w-full text-left border-collapse font-mono text-xs">
           <thead>
             <tr className="bg-surface border-b border-border">
-              {['Class', 'Sent Mbps', 'Rcv Mbps', 'DR%', 'RTT avg µs', 'RTT min', 'RTT max', 'RTT σ', 'Retx', 'CPU Host%'].map(h => (
+              {isUdp
+                ? ['Class','Sent Mbps','Sent Pkts','Rcv Mbps','Rcv Pkts','Lost Pkts','Loss%','DR%','Jitter ms','CPU Sender','CPU Rcvr']
+                : ['Class','Sent Mbps','Rcv Mbps','DR%','RTT avg','RTT min','RTT max','σ','Retx','CWND(B)','CPU Sender','CPU Rcvr']
+              }.map(h => (
                 <th key={h} className="px-3 py-2 text-muted uppercase tracking-wider font-bold whitespace-nowrap">{h}</th>
               ))}
             </tr>
@@ -154,25 +157,44 @@ function ProtocolSection({
           <tbody>
             {TC_KEYS.map(tc => {
               const s = iperf[tc]?.summary;
-              const dr = s?.delivery_ratio;
+              if (isUdp) {
+                const dr  = s?.delivery_ratio ?? 0;
+                const drC = dr>=95?'text-green-400':dr>=75?'text-textdim':dr>=50?'text-yellow-400':'text-red-400';
+                const lp  = s?.lost_percent;
+                const lpC = lp==null?'text-muted':lp<5?'text-green-400':lp<20?'text-textdim':lp<50?'text-yellow-400':'text-red-400';
+                return (
+                  <tr key={tc} className="border-b border-border hover:bg-surface2">
+                    <td className="px-3 py-2 font-bold" style={{ color: TC_COLOR[tc] }}>{TC_LABEL[tc]} <span className="font-normal text-muted">— {TC_FULL[tc]}</span></td>
+                    <td className="px-3 py-2 text-muted">{s ? fmt(s.sent_throughput_mbps) : '—'}</td>
+                    <td className="px-3 py-2 text-muted">{s?.sent_packets != null ? fmtK(s.sent_packets) : '—'}</td>
+                    <td className="px-3 py-2 text-textdim font-semibold">{s ? fmt(s.throughput_mbps) : '—'}</td>
+                    <td className="px-3 py-2 text-muted">{s?.rcv_packets != null ? fmtK(s.rcv_packets) : '—'}</td>
+                    <td className={`px-3 py-2 ${s && (s.lost_packets||0)>0 ? 'text-red-400 font-semibold' : 'text-muted'}`}>{s?.lost_packets != null ? fmtK(s.lost_packets) : '—'}</td>
+                    <td className={`px-3 py-2 font-semibold ${lpC}`}>{lp != null ? `${fmt(lp,2)}%` : '—'}</td>
+                    <td className={`px-3 py-2 font-semibold ${drC}`}>{s ? `${fmt(dr,1)}%` : '—'}</td>
+                    <td className="px-3 py-2 text-muted">{s?.jitter_ms != null ? fmt(s.jitter_ms, 3) : '—'}</td>
+                    <td className="px-3 py-2 text-muted">{s ? `${fmt(s.cpu_host_user,1)}u/${fmt(s.cpu_host_system,1)}s` : '—'}</td>
+                    <td className="px-3 py-2 text-muted">{s?.cpu_remote_total != null ? `${fmt(s.cpu_remote_total,1)}%` : '—'}</td>
+                  </tr>
+                );
+              }
+              const dr  = s?.delivery_ratio;
               const drC = dr == null ? 'text-muted' : dr >= 99 ? 'text-green-400' : dr >= 90 ? 'text-yellow-400' : 'text-red-400';
               const rtt = s?.avg_rtt_us ?? 0;
               return (
                 <tr key={tc} className="border-b border-border hover:bg-surface2">
-                  <td className="px-3 py-2 font-bold" style={{ color: TC_COLOR[tc] }}>
-                    {TC_LABEL[tc]} <span className="font-normal text-muted">— {TC_FULL[tc]}</span>
-                  </td>
+                  <td className="px-3 py-2 font-bold" style={{ color: TC_COLOR[tc] }}>{TC_LABEL[tc]} <span className="font-normal text-muted">— {TC_FULL[tc]}</span></td>
                   <td className="px-3 py-2 text-muted">{s ? fmt(s.sent_throughput_mbps) : '—'}</td>
                   <td className="px-3 py-2 text-textdim font-semibold">{s ? fmt(s.throughput_mbps) : '—'}</td>
-                  <td className={`px-3 py-2 font-semibold ${drC}`}>{dr != null ? `${fmt(dr, 1)}%` : '—'}</td>
-                  <td className="px-3 py-2" style={{ color: rtt < 500 ? '#00ddb0' : rtt > 3000 ? '#ef4444' : '#c8daea' }}>
-                    {s ? fmt(s.avg_rtt_us, 0) : '—'}
-                  </td>
-                  <td className="px-3 py-2 text-muted">{s ? fmt(s.min_rtt_us, 0) : '—'}</td>
-                  <td className="px-3 py-2 text-muted">{s ? fmt(s.max_rtt_us, 0) : '—'}</td>
-                  <td className="px-3 py-2 text-muted">{s ? fmt(s.rtt_std_us, 0) : '—'}</td>
+                  <td className={`px-3 py-2 font-semibold ${drC}`}>{dr != null ? `${fmt(dr,1)}%` : '—'}</td>
+                  <td className="px-3 py-2" style={{ color: rtt<500?'#00ddb0':rtt>3000?'#ef4444':'#c8daea' }}>{s ? `${fmt(s.avg_rtt_us,0)} µs` : '—'}</td>
+                  <td className="px-3 py-2 text-muted">{s ? `${fmt(s.min_rtt_us,0)} µs` : '—'}</td>
+                  <td className="px-3 py-2 text-muted">{s ? `${fmt(s.max_rtt_us,0)} µs` : '—'}</td>
+                  <td className="px-3 py-2 text-muted">{s ? `${fmt(s.rtt_std_us,0)} µs` : '—'}</td>
                   <td className={`px-3 py-2 ${s && s.retransmits > 0 ? 'text-yellow-400' : 'text-muted'}`}>{s ? fmtK(s.retransmits) : '—'}</td>
-                  <td className="px-3 py-2 text-muted">{s ? fmt(s.cpu_host_total) : '—'}</td>
+                  <td className="px-3 py-2 text-muted">{s?.max_snd_cwnd != null ? fmtK(s.max_snd_cwnd) : '—'}</td>
+                  <td className="px-3 py-2 text-muted">{s ? `${fmt(s.cpu_host_user,1)}u/${fmt(s.cpu_host_system,1)}s` : '—'}</td>
+                  <td className="px-3 py-2 text-muted">{s?.cpu_remote_total != null ? `${fmt(s.cpu_remote_total,1)}%` : '—'}</td>
                 </tr>
               );
             })}
@@ -230,11 +252,12 @@ export default function ModePage() {
     : null;
   const cpuTimelineData = cpuSnapshots.map((s, i) => ({
     i,
-    time:  s.snapshot_time,
-    total: (s.usr_pct || 0) + (s.sys_pct || 0) + (s.soft_pct || 0),
-    usr:   s.usr_pct,
-    sys:   s.sys_pct,
-    soft:  s.soft_pct,
+    time:   s.snapshot_time,
+    total:  (s.usr_pct || 0) + (s.sys_pct || 0) + (s.soft_pct || 0) + (s.iowait_pct || 0),
+    usr:    s.usr_pct,
+    sys:    s.sys_pct,
+    soft:   s.soft_pct,
+    iowait: s.iowait_pct,
   }));
 
   // EF KPIs (TCP preferentially)
@@ -390,17 +413,18 @@ export default function ModePage() {
       {/* ── CPU ─────────────────────────────────────────────────────────── */}
       {cpuSnapshots.length > 0 && (
         <SECTION icon={Cpu} title="CPU Utilization (sar)">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
             {(() => {
-              const avg = (key: 'usr_pct' | 'sys_pct' | 'soft_pct' | 'idle_pct') =>
+              const avg = (key: 'usr_pct' | 'sys_pct' | 'soft_pct' | 'idle_pct' | 'iowait_pct') =>
                 cpuSnapshots.reduce((s, r) => s + (r[key] || 0), 0) / cpuSnapshots.length;
-              const totals = cpuSnapshots.map(s => (s.usr_pct || 0) + (s.sys_pct || 0) + (s.soft_pct || 0));
+              const totals = cpuSnapshots.map(s => (s.usr_pct || 0) + (s.sys_pct || 0) + (s.soft_pct || 0) + (s.iowait_pct || 0));
               const totAvg = totals.reduce((a, b) => a + b, 0) / totals.length;
               return [
-                { l: 'User %',       v: avg('usr_pct').toFixed(2)  + '%', hi: avg('usr_pct') > 20 },
-                { l: 'System %',     v: avg('sys_pct').toFixed(2)  + '%', hi: false },
-                { l: 'Softirq %',    v: avg('soft_pct').toFixed(2) + '%', hi: false },
-                { l: 'Total Active', v: totAvg.toFixed(2)          + '%', hi: totAvg > 50 },
+                { l: 'User %',       v: avg('usr_pct').toFixed(2)    + '%', hi: avg('usr_pct') > 20 },
+                { l: 'System %',     v: avg('sys_pct').toFixed(2)    + '%', hi: false },
+                { l: 'IOWait %',     v: avg('iowait_pct').toFixed(2) + '%', hi: avg('iowait_pct') > 5 },
+                { l: 'Softirq %',    v: avg('soft_pct').toFixed(2)   + '%', hi: false },
+                { l: 'Total Active', v: totAvg.toFixed(2)            + '%', hi: totAvg > 50 },
               ].map(({ l, v, hi }) => (
                 <StatTile key={l} label={l} value={v} color={hi ? 'text-yellow-400' : undefined} />
               ));
@@ -415,16 +439,18 @@ export default function ModePage() {
                   <XAxis dataKey="time" tick={{ fontSize: 9, fill: 'var(--color-muted)' }} interval="preserveStartEnd" />
                   <YAxis tick={{ fontSize: 10, fill: 'var(--color-muted)' }} unit="%" domain={[0, 100]} width={38} />
                   <Tooltip contentStyle={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, fontSize: 11 }} />
-                  <Line type="monotone" dataKey="total" name="Active %" stroke={accentColor} dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="usr"   name="User %"    stroke="#60a5fa" dot={false} strokeWidth={1} strokeDasharray="4 2" />
-                  <Line type="monotone" dataKey="sys"   name="System %"  stroke="#f59e0b" dot={false} strokeWidth={1} strokeDasharray="4 2" />
-                  <Line type="monotone" dataKey="soft"  name="Softirq %" stroke="#a78bfa" dot={false} strokeWidth={1} strokeDasharray="2 2" />
+                  <Line type="monotone" dataKey="total"  name="Active %"  stroke={accentColor} dot={false} strokeWidth={2} />
+                  <Line type="monotone" dataKey="usr"    name="User %"    stroke="#60a5fa" dot={false} strokeWidth={1} strokeDasharray="4 2" />
+                  <Line type="monotone" dataKey="sys"    name="System %"  stroke="#f59e0b" dot={false} strokeWidth={1} strokeDasharray="4 2" />
+                  <Line type="monotone" dataKey="iowait" name="IOWait %"  stroke="#34d399" dot={false} strokeWidth={1} strokeDasharray="2 4" />
+                  <Line type="monotone" dataKey="soft"   name="Softirq %" stroke="#a78bfa" dot={false} strokeWidth={1} strokeDasharray="2 2" />
                 </LineChart>
               </ResponsiveContainer>
-              <div className="flex gap-4 mt-2 font-mono text-xs text-muted">
+              <div className="flex gap-4 mt-2 font-mono text-xs text-muted flex-wrap">
                 <span><span style={{ color: accentColor }}>—</span> Active</span>
                 <span><span className="text-blue-400">- -</span> User</span>
                 <span><span className="text-yellow-400">- -</span> System</span>
+                <span><span className="text-emerald-400">·-</span> IOWait</span>
                 <span><span className="text-violet-400">··</span> Softirq</span>
               </div>
             </div>
@@ -472,7 +498,7 @@ function HtbTable({ classes }: { classes: import('@/types').HtbClass[] }) {
       <table className="w-full text-left border-collapse font-mono text-xs">
         <thead>
           <tr className="bg-surface border-b border-border">
-            {['Class ID', 'Rate', 'Bytes Sent', 'Packets', 'Dropped', 'Overlimits', 'Calc. Mbps'].map(h => (
+            {['Class ID', 'Rate', 'Bytes Sent', 'Packets', 'Dropped', 'Overlimits', 'Lended', 'Borrowed', 'Tokens', 'cTokens', 'Requeues', 'Giants', 'Calc. Mbps'].map(h => (
               <th key={h} className="px-3 py-2 text-muted uppercase tracking-wider font-bold whitespace-nowrap">{h}</th>
             ))}
           </tr>
@@ -488,6 +514,12 @@ function HtbTable({ classes }: { classes: import('@/types').HtbClass[] }) {
                 <td className="px-3 py-2 text-muted">{Number(c.packets).toLocaleString()}</td>
                 <td className={`px-3 py-2 ${c.dropped > 0 ? 'text-red-400 font-semibold' : 'text-muted'}`}>{Number(c.dropped).toLocaleString()}</td>
                 <td className="px-3 py-2 text-muted">{Number(c.overlimits).toLocaleString()}</td>
+                <td className="px-3 py-2 text-muted">{c.lended != null ? Number(c.lended).toLocaleString() : '—'}</td>
+                <td className="px-3 py-2 text-muted">{c.borrowed_pkt != null ? Number(c.borrowed_pkt).toLocaleString() : '—'}</td>
+                <td className="px-3 py-2 text-muted">{c.tokens != null ? Number(c.tokens).toLocaleString() : '—'}</td>
+                <td className="px-3 py-2 text-muted">{c.ctokens != null ? Number(c.ctokens).toLocaleString() : '—'}</td>
+                <td className="px-3 py-2 text-muted">{c.requeues != null ? Number(c.requeues).toLocaleString() : '—'}</td>
+                <td className="px-3 py-2 text-muted">{c.giants != null ? Number(c.giants).toLocaleString() : '—'}</td>
                 <td className="px-3 py-2 text-textdim font-semibold">{mbps.toFixed(2)}</td>
               </tr>
             );

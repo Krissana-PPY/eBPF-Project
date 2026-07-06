@@ -7,6 +7,81 @@ const { buildModeMarkdown } = require('../report/mode-markdown');
 
 const router = Router();
 
+// ── Shared row → object builders ───────────────────────────────────────────
+function mkIperfMetric(row) {
+  return {
+    // receiver (post-shaping goodput)
+    throughputMbps:     row.throughput_mbps,
+    rcvBytes:           Number(row.rcv_bytes)  ?? 0,
+    // sender (pre-shaping application rate)
+    sentThroughputMbps: row.sent_throughput_mbps,
+    sentBytes:          Number(row.sent_bytes) ?? 0,
+    // delivery efficiency
+    deliveryRatio:      row.delivery_ratio,
+    // RTT (TCP only)
+    avgRttUs:           row.avg_rtt_us,
+    maxRttUs:           row.max_rtt_us,
+    minRttUs:           row.min_rtt_us,
+    rttStdUs:           row.rtt_std_us,
+    // TCP congestion window
+    maxSndCwnd:         row.max_snd_cwnd,
+    maxSndWnd:          row.max_snd_wnd,
+    tcpCongestion:      row.tcp_congestion,
+    // sender counters
+    retransmits:        row.retransmits,
+    durationS:          row.duration_s,
+    // host (sender) CPU from iperf3
+    cpuHostTotal:       row.cpu_host_total,
+    cpuHostUser:        row.cpu_host_user,
+    cpuHostSystem:      row.cpu_host_system,
+    // remote (receiver) CPU from iperf3
+    cpuRemoteTotal:     row.cpu_remote_total,
+    cpuRemoteUser:      row.cpu_remote_user,
+    cpuRemoteSystem:    row.cpu_remote_system,
+    // UDP-specific
+    jitterMs:           row.jitter_ms,
+    lostPackets:        row.lost_packets != null ? Number(row.lost_packets) : null,
+    sentPackets:        row.sent_packets != null ? Number(row.sent_packets) : null,
+    rcvPackets:         row.rcv_packets  != null ? Number(row.rcv_packets)  : null,
+    lostPercent:        row.lost_percent,
+  };
+}
+
+function mkCpuMetric(row) {
+  const usr    = row.avg_usr    || 0;
+  const sys    = row.avg_sys    || 0;
+  const soft   = row.avg_soft   || 0;
+  const iowait = row.avg_iowait || 0;
+  const nice   = row.avg_nice   || 0;
+  return {
+    avgUsr:    usr,
+    avgNice:   nice,
+    avgSys:    sys,
+    avgIowait: iowait,
+    avgSoft:   soft,
+    avgIdle:   row.avg_idle || 0,
+    avgTotal:  usr + sys + soft + iowait + nice,
+    samples:   row.samples,
+  };
+}
+
+function mkHtbClass(row) {
+  return {
+    rate:          row.rate,
+    bytesSent:     row.bytes_sent,
+    packets:       row.packets,
+    dropped:       row.dropped,
+    overlimits:    row.overlimits,
+    lended:        row.lended       ?? 0,
+    borrowedPkt:   row.borrowed_pkt ?? 0,
+    tokens:        row.tokens       ?? 0,
+    ctokens:       row.ctokens      ?? 0,
+    requeues:      row.requeues     ?? 0,
+    giants:        row.giants       ?? 0,
+    throughputMbps: (row.bytes_sent * 8) / 30 / 1e6,
+  };
+}
+
 // ── GET /datasets — list all datasets ──────────────────────────────────────
 router.get('/', async (req, res, next) => {
   try {
@@ -67,11 +142,13 @@ router.get('/:id', async (req, res, next) => {
     // cpu snapshots — aggregate per qos+protocol
     const cpuRes = await pool.query(
       `SELECT e.qos_type, e.protocol,
-              AVG(c.usr_pct)::float  AS avg_usr,
-              AVG(c.sys_pct)::float  AS avg_sys,
-              AVG(c.soft_pct)::float AS avg_soft,
-              AVG(c.idle_pct)::float AS avg_idle,
-              COUNT(*)::int          AS samples
+              AVG(c.usr_pct)::float     AS avg_usr,
+              AVG(c.nice_pct)::float    AS avg_nice,
+              AVG(c.sys_pct)::float     AS avg_sys,
+              AVG(c.iowait_pct)::float  AS avg_iowait,
+              AVG(c.soft_pct)::float    AS avg_soft,
+              AVG(c.idle_pct)::float    AS avg_idle,
+              COUNT(*)::int             AS samples
        FROM cpu_snapshots c
        JOIN experiments e ON e.id = c.experiment_id
        WHERE e.dataset_id = $1
@@ -118,50 +195,20 @@ router.get('/:id', async (req, res, next) => {
       const q  = row.qos_type;
       const tc = row.traffic_class;
       if (!metrics[q]) metrics[q] = {};
-      metrics[q][tc] = {
-        throughputMbps:     row.throughput_mbps,
-        rcvBytes:           Number(row.rcv_bytes)  || 0,
-        sentThroughputMbps: row.sent_throughput_mbps,
-        sentBytes:          Number(row.sent_bytes) || 0,
-        deliveryRatio:      row.delivery_ratio,
-        avgRttUs:           row.avg_rtt_us,
-        maxRttUs:           row.max_rtt_us,
-        minRttUs:           row.min_rtt_us,
-        rttStdUs:           row.rtt_std_us,
-        retransmits:        row.retransmits,
-        durationS:          row.duration_s,
-        cpuHostTotal:       row.cpu_host_total,
-        cpuHostUser:        row.cpu_host_user,
-        cpuHostSystem:      row.cpu_host_system,
-        cpuRemoteTotal:     row.cpu_remote_total,
-      };
+      metrics[q][tc] = mkIperfMetric(row);
     }
 
     for (const row of cpuRes.rows) {
       const q = row.qos_type;
       if (!metrics[q]) metrics[q] = {};
-      metrics[q].cpu = {
-        avgUsr:   row.avg_usr,
-        avgSys:   row.avg_sys,
-        avgSoft:  row.avg_soft,
-        avgIdle:  row.avg_idle,
-        avgTotal: (row.avg_usr || 0) + (row.avg_sys || 0) + (row.avg_soft || 0),
-        samples:  row.samples,
-      };
+      metrics[q].cpu = mkCpuMetric(row);
     }
 
     if (htbRes.rows.length) {
       if (!metrics.htb) metrics.htb = {};
       metrics.htb.tcClasses = {};
       for (const row of htbRes.rows) {
-        metrics.htb.tcClasses[row.class_id] = {
-          rate:          row.rate,
-          bytesSent:     row.bytes_sent,
-          packets:       row.packets,
-          dropped:       row.dropped,
-          overlimits:    row.overlimits,
-          throughputMbps: (row.bytes_sent * 8) / 30 / 1e6,
-        };
+        metrics.htb.tcClasses[row.class_id] = mkHtbClass(row);
       }
     }
 
@@ -202,9 +249,13 @@ router.get('/:id', async (req, res, next) => {
          WHERE e.dataset_id = $1 AND e.protocol IS NOT NULL`, [id]),
       pool.query(
         `SELECT e.qos_type, e.protocol,
-                AVG(c.usr_pct)::float AS avg_usr, AVG(c.sys_pct)::float AS avg_sys,
-                AVG(c.soft_pct)::float AS avg_soft, AVG(c.idle_pct)::float AS avg_idle,
-                COUNT(*)::int AS samples
+                AVG(c.usr_pct)::float    AS avg_usr,
+                AVG(c.nice_pct)::float   AS avg_nice,
+                AVG(c.sys_pct)::float    AS avg_sys,
+                AVG(c.iowait_pct)::float AS avg_iowait,
+                AVG(c.soft_pct)::float   AS avg_soft,
+                AVG(c.idle_pct)::float   AS avg_idle,
+                COUNT(*)::int            AS samples
          FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
          WHERE e.dataset_id = $1 AND e.protocol IS NOT NULL
          GROUP BY e.qos_type, e.protocol`, [id]),
@@ -227,49 +278,24 @@ router.get('/:id', async (req, res, next) => {
     ]);
 
     const metricsByProtocol = {};
-    const mkIperfRow = (row) => ({
-      throughputMbps:     row.throughput_mbps,
-      rcvBytes:           Number(row.rcv_bytes)  || 0,
-      sentThroughputMbps: row.sent_throughput_mbps,
-      sentBytes:          Number(row.sent_bytes) || 0,
-      deliveryRatio:      row.delivery_ratio,
-      avgRttUs:           row.avg_rtt_us,
-      maxRttUs:           row.max_rtt_us,
-      minRttUs:           row.min_rtt_us,
-      rttStdUs:           row.rtt_std_us,
-      retransmits:        row.retransmits,
-      durationS:          row.duration_s,
-      cpuHostTotal:       row.cpu_host_total,
-      cpuHostUser:        row.cpu_host_user,
-      cpuHostSystem:      row.cpu_host_system,
-      cpuRemoteTotal:     row.cpu_remote_total,
-    });
     for (const row of mpIperfRes.rows) {
       const { protocol: p, qos_type: q, traffic_class: tc } = row;
       if (!metricsByProtocol[p]) metricsByProtocol[p] = {};
       if (!metricsByProtocol[p][q]) metricsByProtocol[p][q] = {};
-      metricsByProtocol[p][q][tc] = mkIperfRow(row);
+      metricsByProtocol[p][q][tc] = mkIperfMetric(row);
     }
     for (const row of mpCpuRes.rows) {
       const { protocol: p, qos_type: q } = row;
       if (!metricsByProtocol[p]) metricsByProtocol[p] = {};
       if (!metricsByProtocol[p][q]) metricsByProtocol[p][q] = {};
-      metricsByProtocol[p][q].cpu = {
-        avgUsr: row.avg_usr, avgSys: row.avg_sys, avgSoft: row.avg_soft,
-        avgIdle: row.avg_idle, avgTotal: (row.avg_usr||0)+(row.avg_sys||0)+(row.avg_soft||0),
-        samples: row.samples,
-      };
+      metricsByProtocol[p][q].cpu = mkCpuMetric(row);
     }
     for (const row of mpHtbRes.rows) {
       const p = row.protocol;
       if (!metricsByProtocol[p]) metricsByProtocol[p] = {};
       if (!metricsByProtocol[p].htb) metricsByProtocol[p].htb = {};
       if (!metricsByProtocol[p].htb.tcClasses) metricsByProtocol[p].htb.tcClasses = {};
-      metricsByProtocol[p].htb.tcClasses[row.class_id] = {
-        rate: row.rate, bytesSent: row.bytes_sent, packets: row.packets,
-        dropped: row.dropped, overlimits: row.overlimits,
-        throughputMbps: (row.bytes_sent * 8) / 30 / 1e6,
-      };
+      metricsByProtocol[p].htb.tcClasses[row.class_id] = mkHtbClass(row);
     }
     for (const row of mpEbpfRes.rows) {
       const p = row.protocol;
@@ -352,19 +378,7 @@ router.get('/:id/mode/:qosType', async (req, res, next) => {
     const iperf = {};
     for (const row of iperfRes.rows) {
       const tc = row.traffic_class;
-      iperf[tc] = {
-        summary: {
-          throughput_mbps: row.throughput_mbps, rcv_bytes: Number(row.rcv_bytes) || 0,
-          sent_throughput_mbps: row.sent_throughput_mbps, sent_bytes: Number(row.sent_bytes) || 0,
-          delivery_ratio: row.delivery_ratio,
-          avg_rtt_us: row.avg_rtt_us,
-          max_rtt_us: row.max_rtt_us, min_rtt_us: row.min_rtt_us, rtt_std_us: row.rtt_std_us,
-          retransmits: row.retransmits, duration_s: row.duration_s,
-          cpu_host_total: row.cpu_host_total, cpu_host_user: row.cpu_host_user,
-          cpu_host_system: row.cpu_host_system, cpu_remote_total: row.cpu_remote_total,
-        },
-        intervals: [],
-      };
+      iperf[tc] = { summary: mkS(row), intervals: [] };
     }
     for (const row of intervalsRes.rows) {
       const tc = row.traffic_class;
@@ -418,13 +432,31 @@ router.get('/:id/mode/:qosType', async (req, res, next) => {
 
     const iperfByProtocol = {};
     const mkS = (row) => ({
-      throughput_mbps: row.throughput_mbps, rcv_bytes: Number(row.rcv_bytes)||0,
-      sent_throughput_mbps: row.sent_throughput_mbps, sent_bytes: Number(row.sent_bytes)||0,
-      delivery_ratio: row.delivery_ratio, avg_rtt_us: row.avg_rtt_us,
-      max_rtt_us: row.max_rtt_us, min_rtt_us: row.min_rtt_us, rtt_std_us: row.rtt_std_us,
-      retransmits: row.retransmits, duration_s: row.duration_s,
-      cpu_host_total: row.cpu_host_total, cpu_host_user: row.cpu_host_user,
-      cpu_host_system: row.cpu_host_system, cpu_remote_total: row.cpu_remote_total,
+      throughput_mbps:      row.throughput_mbps,
+      rcv_bytes:            Number(row.rcv_bytes)  ?? 0,
+      sent_throughput_mbps: row.sent_throughput_mbps,
+      sent_bytes:           Number(row.sent_bytes) ?? 0,
+      delivery_ratio:       row.delivery_ratio,
+      avg_rtt_us:           row.avg_rtt_us,
+      max_rtt_us:           row.max_rtt_us,
+      min_rtt_us:           row.min_rtt_us,
+      rtt_std_us:           row.rtt_std_us,
+      max_snd_cwnd:         row.max_snd_cwnd,
+      max_snd_wnd:          row.max_snd_wnd,
+      tcp_congestion:       row.tcp_congestion,
+      retransmits:          row.retransmits,
+      duration_s:           row.duration_s,
+      cpu_host_total:       row.cpu_host_total,
+      cpu_host_user:        row.cpu_host_user,
+      cpu_host_system:      row.cpu_host_system,
+      cpu_remote_total:     row.cpu_remote_total,
+      cpu_remote_user:      row.cpu_remote_user,
+      cpu_remote_system:    row.cpu_remote_system,
+      jitter_ms:            row.jitter_ms,
+      lost_packets:         row.lost_packets != null ? Number(row.lost_packets) : null,
+      sent_packets:         row.sent_packets != null ? Number(row.sent_packets) : null,
+      rcv_packets:          row.rcv_packets  != null ? Number(row.rcv_packets)  : null,
+      lost_percent:         row.lost_percent,
     });
     for (const row of mpModeIperfRes.rows) {
       const { protocol: p, traffic_class: tc } = row;
@@ -453,7 +485,7 @@ router.get('/:id/mode/:qosType', async (req, res, next) => {
     for (const row of mpModeHtbRes.rows) {
       const p = row.protocol;
       if (!htbClassesByProtocol[p]) htbClassesByProtocol[p] = [];
-      htbClassesByProtocol[p].push({ id: row.id, class_id: row.class_id, rate: row.rate, bytes_sent: row.bytes_sent, packets: row.packets, dropped: row.dropped, overlimits: row.overlimits });
+      htbClassesByProtocol[p].push({ id: row.id, class_id: row.class_id, ...mkHtbClass(row) });
     }
     const ebpfClassesByProtocol = {};
     for (const row of mpModeEbpfRes.rows) {

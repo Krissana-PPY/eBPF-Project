@@ -21,7 +21,7 @@ const upload  = multer({
   },
 });
 
-// ── POST /upload/:datasetId — upload files into an existing dataset ─────────
+// ── POST /upload/:datasetId ─────────────────────────────────────────────────
 router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
   const datasetId = parseInt(req.params.datasetId);
   if (isNaN(datasetId)) return res.status(400).json({ error: 'invalid datasetId' });
@@ -33,7 +33,6 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
   try {
     await client.query('BEGIN');
 
-    // verify dataset exists
     const ds = await client.query('SELECT id FROM datasets WHERE id = $1', [datasetId]);
     if (!ds.rows.length) {
       await client.query('ROLLBACK');
@@ -44,7 +43,6 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
       try {
         const { meta, data } = parseFile(file.originalname, file.buffer);
 
-        // insert experiment record
         const expRes = await client.query(
           `INSERT INTO experiments (dataset_id, qos_type, protocol, traffic_class, experiment_type, source_filename)
            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
@@ -52,7 +50,6 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
         );
         const expId = expRes.rows[0].id;
 
-        // persist parsed data
         if (meta.experimentType === 'iperf') {
           const s = data.summary;
           await client.query(
@@ -61,46 +58,63 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
               throughput_mbps, rcv_bytes,
               sent_throughput_mbps, sent_bytes, delivery_ratio,
               avg_rtt_us, max_rtt_us, min_rtt_us, rtt_std_us,
+              max_snd_cwnd, max_snd_wnd, tcp_congestion,
               retransmits, duration_s,
-              cpu_host_total, cpu_host_user, cpu_host_system, cpu_remote_total)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+              cpu_host_total, cpu_host_user, cpu_host_system,
+              cpu_remote_total, cpu_remote_user, cpu_remote_system,
+              jitter_ms, lost_packets, sent_packets, rcv_packets, lost_percent)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
             [expId,
              s.throughputMbps,     s.rcvBytes,
-             s.sentThroughputMbps, s.sentBytes, s.deliveryRatio,
-             s.avgRttUs, s.maxRttUs, s.minRttUs, s.rttStdUs,
-             s.retransmits, s.durationS,
-             s.cpuHostTotal, s.cpuHostUser, s.cpuHostSystem, s.cpuRemoteTotal]
+             s.sentThroughputMbps, s.sentBytes,     s.deliveryRatio,
+             s.avgRttUs,           s.maxRttUs,      s.minRttUs,      s.rttStdUs,
+             s.maxSndCwnd,         s.maxSndWnd,     s.tcpCongestion,
+             s.retransmits,        s.durationS,
+             s.cpuHostTotal,       s.cpuHostUser,   s.cpuHostSystem,
+             s.cpuRemoteTotal,     s.cpuRemoteUser, s.cpuRemoteSystem,
+             s.jitterMs,           s.lostPackets,   s.sentPackets,   s.rcvPackets, s.lostPercent]
           );
+
           if (data.intervals?.length) {
-            const vals = data.intervals.map((iv, i) => `($1,$${i*5+2},$${i*5+3},$${i*5+4},$${i*5+5},$${i*5+6})`).join(',');
+            const vals   = data.intervals.map((_, i) =>
+              `($1,$${i*5+2},$${i*5+3},$${i*5+4},$${i*5+5},$${i*5+6})`).join(',');
             const params = [expId, ...data.intervals.flatMap(iv =>
-              [iv.start, iv.end, iv.bytes, iv.bitsPerSecond, iv.rttUs ?? null]
-            )];
+              [iv.start, iv.end, iv.bytes, iv.bitsPerSecond, iv.rttUs ?? null])];
             await client.query(
-              `INSERT INTO iperf_intervals (experiment_id,interval_start,interval_end,bytes,bits_per_second,rtt_us) VALUES ${vals}`,
-              params
-            );
+              `INSERT INTO iperf_intervals
+               (experiment_id,interval_start,interval_end,bytes,bits_per_second,rtt_us)
+               VALUES ${vals}`, params);
           }
+
         } else if (meta.experimentType === 'cpu') {
           for (const snap of data.snapshots) {
             await client.query(
-              `INSERT INTO cpu_snapshots (experiment_id, snapshot_time, cpu_core, usr_pct, sys_pct, soft_pct, idle_pct)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [expId, snap.snapshotTime, snap.cpuCore, snap.usrPct, snap.sysPct, snap.softPct, snap.idlePct]
+              `INSERT INTO cpu_snapshots
+               (experiment_id, snapshot_time, cpu_core,
+                usr_pct, nice_pct, sys_pct, iowait_pct, soft_pct, idle_pct)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+              [expId, snap.snapshotTime, snap.cpuCore,
+               snap.usrPct, snap.nicePct, snap.sysPct, snap.iowaitPct, snap.softPct, snap.idlePct]
             );
           }
+
         } else if (meta.experimentType === 'htb_tc') {
           for (const cls of data.classes) {
             await client.query(
-              `INSERT INTO htb_class_stats (experiment_id, class_id, rate, bytes_sent, packets, dropped, overlimits)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [expId, cls.classId, cls.rate, cls.bytesSent, cls.packets, cls.dropped, cls.overlimits]
+              `INSERT INTO htb_class_stats
+               (experiment_id, class_id, rate, bytes_sent, packets, dropped, overlimits,
+                lended, borrowed_pkt, tokens, ctokens, requeues, giants)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+              [expId, cls.classId, cls.rate, cls.bytesSent, cls.packets, cls.dropped, cls.overlimits,
+               cls.lended, cls.borrowedPkt, cls.tokens, cls.ctokens, cls.requeues, cls.giants]
             );
           }
+
         } else if (meta.experimentType === 'ebpf_map') {
           for (const cls of data.classes) {
             await client.query(
-              `INSERT INTO ebpf_class_stats (experiment_id, class_key, class_name, packets, bytes, borrowed, ecn_marked, delayed)
+              `INSERT INTO ebpf_class_stats
+               (experiment_id, class_key, class_name, packets, bytes, borrowed, ecn_marked, delayed)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
               [expId, cls.classKey, cls.className, cls.packets, cls.bytes, cls.borrowed, cls.ecnMarked, cls.delayed]
             );

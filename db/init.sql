@@ -1,4 +1,4 @@
--- eBPF QoS Research Database Schema
+-- eBPF QoS Research Database Schema (includes all columns from all migrations)
 
 CREATE TABLE IF NOT EXISTS datasets (
     id          SERIAL PRIMARY KEY,
@@ -28,20 +28,33 @@ CREATE TABLE IF NOT EXISTS iperf_summary (
     sent_throughput_mbps  FLOAT,
     sent_bytes            BIGINT,
     -- delivery efficiency
-    delivery_ratio        FLOAT,   -- rcv_bytes / sent_bytes * 100
-    -- RTT (measured at sender via TCP ACK — inherently bidirectional)
+    delivery_ratio        FLOAT,
+    -- RTT (TCP only — sender via ACK, bidirectional)
     avg_rtt_us            FLOAT,
     max_rtt_us            FLOAT,
     min_rtt_us            FLOAT,
     rtt_std_us            FLOAT,
-    -- sender metrics
+    -- TCP congestion window (stream-level)
+    max_snd_cwnd          BIGINT,
+    max_snd_wnd           BIGINT,
+    tcp_congestion        VARCHAR(30),
+    -- sender counters
     retransmits           INTEGER,
     duration_s            FLOAT,
-    -- iperf3 CPU utilization
+    -- iperf3 host (sender) CPU
     cpu_host_total        FLOAT,
     cpu_host_user         FLOAT,
     cpu_host_system       FLOAT,
-    cpu_remote_total      FLOAT
+    -- iperf3 remote (receiver) CPU
+    cpu_remote_total      FLOAT,
+    cpu_remote_user       FLOAT,
+    cpu_remote_system     FLOAT,
+    -- UDP-specific (receiver side)
+    jitter_ms             FLOAT,
+    lost_packets          BIGINT,
+    sent_packets          BIGINT,
+    rcv_packets           BIGINT,
+    lost_percent          FLOAT
 );
 
 CREATE TABLE IF NOT EXISTS iperf_intervals (
@@ -61,7 +74,9 @@ CREATE TABLE IF NOT EXISTS cpu_snapshots (
     snapshot_time VARCHAR(20),
     cpu_core      VARCHAR(10),
     usr_pct       FLOAT,
+    nice_pct      FLOAT,
     sys_pct       FLOAT,
+    iowait_pct    FLOAT,
     soft_pct      FLOAT,
     idle_pct      FLOAT
 );
@@ -74,7 +89,13 @@ CREATE TABLE IF NOT EXISTS htb_class_stats (
     bytes_sent    BIGINT,
     packets       INTEGER,
     dropped       INTEGER,
-    overlimits    INTEGER
+    overlimits    INTEGER,
+    lended        BIGINT,
+    borrowed_pkt  BIGINT,
+    tokens        BIGINT,
+    ctokens       BIGINT,
+    requeues      INTEGER,
+    giants        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS ebpf_class_stats (
