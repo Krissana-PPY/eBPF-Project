@@ -564,21 +564,52 @@ router.get('/:id/mode/:qosType/report', async (req, res, next) => {
          ORDER BY m.class_key`, [id, qosType, primaryProto2]),
     ]);
 
+    // Per-protocol iperf/htb/ebpf data for multi-protocol report sections
+    const [allIperfRes, allHtbRes, allEbpfRes] = await Promise.all([
+      pool.query(
+        `SELECT e.traffic_class, e.protocol, s.*
+         FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = $2 AND e.protocol IS NOT NULL`,
+        [id, qosType]),
+      pool.query(
+        `SELECT h.*, e.protocol
+         FROM htb_class_stats h JOIN experiments e ON e.id = h.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = $2 AND e.protocol IS NOT NULL
+         ORDER BY e.protocol, h.class_id`,
+        [id, qosType]),
+      pool.query(
+        `SELECT m.*, e.protocol
+         FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = $2 AND e.protocol IS NOT NULL
+         ORDER BY e.protocol, m.class_key`,
+        [id, qosType]),
+    ]);
+
+    function buildIperfSummary(row) {
+      return {
+        throughput_mbps: row.throughput_mbps, rcv_bytes: Number(row.rcv_bytes) || 0,
+        sent_throughput_mbps: row.sent_throughput_mbps, sent_bytes: Number(row.sent_bytes) || 0,
+        delivery_ratio: row.delivery_ratio,
+        avg_rtt_us: row.avg_rtt_us,
+        max_rtt_us: row.max_rtt_us, min_rtt_us: row.min_rtt_us, rtt_std_us: row.rtt_std_us,
+        retransmits: row.retransmits, duration_s: row.duration_s,
+        cpu_host_total: row.cpu_host_total, cpu_host_user: row.cpu_host_user,
+        cpu_host_system: row.cpu_host_system,
+        cpu_remote_total: row.cpu_remote_total, cpu_remote_user: row.cpu_remote_user,
+        cpu_remote_system: row.cpu_remote_system,
+        max_snd_cwnd: row.max_snd_cwnd, max_snd_wnd: row.max_snd_wnd,
+        tcp_congestion: row.tcp_congestion,
+        jitter_ms: row.jitter_ms,
+        lost_packets: row.lost_packets != null ? Number(row.lost_packets) : null,
+        sent_packets: row.sent_packets != null ? Number(row.sent_packets) : null,
+        rcv_packets:  row.rcv_packets  != null ? Number(row.rcv_packets)  : null,
+        lost_percent: row.lost_percent,
+      };
+    }
+
     const iperf = {};
     for (const row of iperfRes.rows) {
-      iperf[row.traffic_class] = {
-        summary: {
-          throughput_mbps: row.throughput_mbps, rcv_bytes: Number(row.rcv_bytes) || 0,
-          sent_throughput_mbps: row.sent_throughput_mbps, sent_bytes: Number(row.sent_bytes) || 0,
-          delivery_ratio: row.delivery_ratio,
-          avg_rtt_us: row.avg_rtt_us,
-          max_rtt_us: row.max_rtt_us, min_rtt_us: row.min_rtt_us, rtt_std_us: row.rtt_std_us,
-          retransmits: row.retransmits, duration_s: row.duration_s,
-          cpu_host_total: row.cpu_host_total, cpu_host_user: row.cpu_host_user,
-          cpu_host_system: row.cpu_host_system, cpu_remote_total: row.cpu_remote_total,
-        },
-        intervals: [],
-      };
+      iperf[row.traffic_class] = { summary: buildIperfSummary(row), intervals: [] };
     }
     for (const row of intervalsRes.rows) {
       const tc = row.traffic_class;
@@ -589,10 +620,40 @@ router.get('/:id/mode/:qosType/report', async (req, res, next) => {
     for (const row of intervalsRes.rows) {
       const key = `${qosType}_${row.traffic_class}`;
       if (!timeSeries[key]) timeSeries[key] = [];
-      timeSeries[key].push({ t: row.interval_start, bitsPerSecond: row.bits_per_second, rttUs: row.rtt_us, retransmits: row.retransmits });
+      timeSeries[key].push({ t: row.interval_start, bitsPerSecond: row.bits_per_second, rttUs: row.rtt_us, retransmits: row.retransmits, jitterMs: row.jitter_ms });
     }
 
-    const modeData = { dataset_id: dataset.id, dataset_name: dataset.name, qos_type: qosType, iperf, cpu: { snapshots: cpuRes.rows }, htbClasses: htbRes.rows, ebpfClasses: ebpfRes.rows, timeSeries };
+    // Build iperfByProtocol
+    const iperfByProtocol2 = {};
+    for (const row of allIperfRes.rows) {
+      const p = row.protocol; const tc = row.traffic_class;
+      if (!iperfByProtocol2[p]) iperfByProtocol2[p] = {};
+      iperfByProtocol2[p][tc] = { summary: buildIperfSummary(row), intervals: [] };
+    }
+
+    // Build htbClassesByProtocol2 / ebpfClassesByProtocol2
+    const htbClassesByProtocol2 = {};
+    for (const row of allHtbRes.rows) {
+      const p = row.protocol;
+      if (!htbClassesByProtocol2[p]) htbClassesByProtocol2[p] = [];
+      htbClassesByProtocol2[p].push(row);
+    }
+    const ebpfClassesByProtocol2 = {};
+    for (const row of allEbpfRes.rows) {
+      const p = row.protocol;
+      if (!ebpfClassesByProtocol2[p]) ebpfClassesByProtocol2[p] = [];
+      ebpfClassesByProtocol2[p].push(row);
+    }
+
+    const modeData = {
+      dataset_id: dataset.id, dataset_name: dataset.name, qos_type: qosType,
+      iperf, cpu: { snapshots: cpuRes.rows },
+      htbClasses: htbRes.rows, ebpfClasses: ebpfRes.rows,
+      timeSeries,
+      iperfByProtocol: iperfByProtocol2,
+      htbClassesByProtocol: htbClassesByProtocol2,
+      ebpfClassesByProtocol: ebpfClassesByProtocol2,
+    };
     const md  = buildModeMarkdown(modeData);
     const slug = `${qosType}-mode-${dataset.id}`;
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
@@ -619,7 +680,7 @@ router.get('/:id/report', async (req, res, next) => {
     const rptProtos = rptProtoRes.rows.map(r => r.protocol).filter(Boolean);
     const rptProto  = rptProtos.includes('tcp') ? 'tcp' : (rptProtos[0] || null);
 
-    const [iperfRes, cpuRes, htbRes, ebpfRes, intervalRes] = await Promise.all([
+    const [iperfRes, cpuRes, htbRes, ebpfRes, intervalRes, allProtoIperfRes, allProtoCpuRes] = await Promise.all([
       pool.query(
         `SELECT e.qos_type, e.traffic_class, s.*
          FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id
@@ -627,7 +688,8 @@ router.get('/:id/report', async (req, res, next) => {
            AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`, [id, rptProto]),
       pool.query(
         `SELECT e.qos_type,
-                AVG(c.usr_pct)::float AS avg_usr, AVG(c.sys_pct)::float AS avg_sys,
+                AVG(c.usr_pct)::float AS avg_usr, AVG(c.nice_pct)::float AS avg_nice,
+                AVG(c.sys_pct)::float AS avg_sys, AVG(c.iowait_pct)::float AS avg_iowait,
                 AVG(c.soft_pct)::float AS avg_soft, AVG(c.idle_pct)::float AS avg_idle,
                 COUNT(*)::int AS samples
          FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
@@ -644,18 +706,30 @@ router.get('/:id/report', async (req, res, next) => {
            AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`, [id, rptProto]),
       pool.query(
         `SELECT e.qos_type, e.traffic_class, i.interval_start, i.interval_end,
-                i.bits_per_second, i.rtt_us, i.retransmits
+                i.bits_per_second, i.rtt_us, i.retransmits, i.jitter_ms
          FROM iperf_intervals i JOIN experiments e ON e.id = i.experiment_id
          WHERE e.dataset_id = $1
            AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))
          ORDER BY e.qos_type, e.traffic_class, i.interval_start`, [id, rptProto]),
+      // Multi-protocol iperf for metricsByProtocol
+      pool.query(
+        `SELECT e.qos_type, e.traffic_class, e.protocol, s.*
+         FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id
+         WHERE e.dataset_id = $1 AND e.protocol IS NOT NULL`, [id]),
+      // Multi-protocol CPU for metricsByProtocol
+      pool.query(
+        `SELECT e.qos_type, e.protocol,
+                AVG(c.usr_pct)::float AS avg_usr, AVG(c.nice_pct)::float AS avg_nice,
+                AVG(c.sys_pct)::float AS avg_sys, AVG(c.iowait_pct)::float AS avg_iowait,
+                AVG(c.soft_pct)::float AS avg_soft, AVG(c.idle_pct)::float AS avg_idle,
+                COUNT(*)::int AS samples
+         FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
+         WHERE e.dataset_id = $1 AND e.protocol IS NOT NULL
+         GROUP BY e.qos_type, e.protocol`, [id]),
     ]);
 
-    const metrics = {};
-    for (const row of iperfRes.rows) {
-      const q = row.qos_type; const tc = row.traffic_class;
-      if (!metrics[q]) metrics[q] = {};
-      metrics[q][tc] = {
+    function mkMetric(row) {
+      return {
         throughputMbps:     row.throughput_mbps,
         rcvBytes:           Number(row.rcv_bytes)  || 0,
         sentThroughputMbps: row.sent_throughput_mbps,
@@ -665,18 +739,38 @@ router.get('/:id/report', async (req, res, next) => {
         maxRttUs:           row.max_rtt_us, minRttUs: row.min_rtt_us, rttStdUs: row.rtt_std_us,
         retransmits:        row.retransmits, durationS: row.duration_s,
         cpuHostTotal:       row.cpu_host_total, cpuHostUser: row.cpu_host_user,
-        cpuHostSystem:      row.cpu_host_system, cpuRemoteTotal: row.cpu_remote_total,
+        cpuHostSystem:      row.cpu_host_system,
+        cpuRemoteTotal:     row.cpu_remote_total, cpuRemoteUser: row.cpu_remote_user,
+        cpuRemoteSystem:    row.cpu_remote_system,
+        maxSndCwnd:         row.max_snd_cwnd, maxSndWnd: row.max_snd_wnd,
+        tcpCongestion:      row.tcp_congestion,
+        jitterMs:           row.jitter_ms,
+        lostPackets:        row.lost_packets != null ? Number(row.lost_packets) : null,
+        sentPackets:        row.sent_packets != null ? Number(row.sent_packets) : null,
+        rcvPackets:         row.rcv_packets  != null ? Number(row.rcv_packets)  : null,
+        lostPercent:        row.lost_percent,
       };
+    }
+
+    function mkCpuMetric(row) {
+      return {
+        avgUsr: row.avg_usr, avgNice: row.avg_nice, avgSys: row.avg_sys,
+        avgIowait: row.avg_iowait, avgSoft: row.avg_soft, avgIdle: row.avg_idle,
+        avgTotal: (row.avg_usr || 0) + (row.avg_nice || 0) + (row.avg_sys || 0) + (row.avg_iowait || 0) + (row.avg_soft || 0),
+        samples: row.samples,
+      };
+    }
+
+    const metrics = {};
+    for (const row of iperfRes.rows) {
+      const q = row.qos_type; const tc = row.traffic_class;
+      if (!metrics[q]) metrics[q] = {};
+      metrics[q][tc] = mkMetric(row);
     }
     for (const row of cpuRes.rows) {
       const q = row.qos_type;
       if (!metrics[q]) metrics[q] = {};
-      metrics[q].cpu = {
-        avgUsr: row.avg_usr, avgSys: row.avg_sys,
-        avgSoft: row.avg_soft, avgIdle: row.avg_idle,
-        avgTotal: (row.avg_usr || 0) + (row.avg_sys || 0) + (row.avg_soft || 0),
-        samples: row.samples,
-      };
+      metrics[q].cpu = mkCpuMetric(row);
     }
     if (htbRes.rows.length) {
       if (!metrics.htb) metrics.htb = {};
@@ -685,6 +779,9 @@ router.get('/:id/report', async (req, res, next) => {
         metrics.htb.tcClasses[row.class_id] = {
           rate: row.rate, bytesSent: row.bytes_sent, packets: row.packets,
           dropped: row.dropped, overlimits: row.overlimits,
+          lended: row.lended, borrowedPkt: row.borrowed_pkt,
+          tokens: row.tokens, ctokens: row.ctokens,
+          requeues: row.requeues, giants: row.giants,
           throughputMbps: (row.bytes_sent * 8) / 30 / 1e6,
         };
       }
@@ -704,10 +801,25 @@ router.get('/:id/report', async (req, res, next) => {
     for (const row of intervalRes.rows) {
       const key = `${row.qos_type}_${row.traffic_class}`;
       if (!timeSeries[key]) timeSeries[key] = [];
-      timeSeries[key].push({ t: row.interval_start, bitsPerSecond: row.bits_per_second, rttUs: row.rtt_us, retransmits: row.retransmits });
+      timeSeries[key].push({ t: row.interval_start, bitsPerSecond: row.bits_per_second, rttUs: row.rtt_us, retransmits: row.retransmits, jitterMs: row.jitter_ms });
     }
 
-    const md = buildMarkdown({ ...dataset, metrics, timeSeries });
+    // Build metricsByProtocol (tcp / udp keyed like metrics)
+    const metricsByProtocol = {};
+    for (const row of allProtoIperfRes.rows) {
+      const p = row.protocol, q = row.qos_type, tc = row.traffic_class;
+      if (!metricsByProtocol[p]) metricsByProtocol[p] = {};
+      if (!metricsByProtocol[p][q]) metricsByProtocol[p][q] = {};
+      metricsByProtocol[p][q][tc] = mkMetric(row);
+    }
+    for (const row of allProtoCpuRes.rows) {
+      const p = row.protocol, q = row.qos_type;
+      if (!metricsByProtocol[p]) metricsByProtocol[p] = {};
+      if (!metricsByProtocol[p][q]) metricsByProtocol[p][q] = {};
+      metricsByProtocol[p][q].cpu = mkCpuMetric(row);
+    }
+
+    const md = buildMarkdown({ ...dataset, metrics, metricsByProtocol, timeSeries });
 
     const slug = dataset.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
