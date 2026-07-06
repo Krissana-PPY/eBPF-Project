@@ -146,10 +146,10 @@ function ProtocolSection({
         <table className="w-full text-left border-collapse font-mono text-xs">
           <thead>
             <tr className="bg-surface border-b border-border">
-              {isUdp
+              {(isUdp
                 ? ['Class','Sent Mbps','Sent Pkts','Rcv Mbps','Rcv Pkts','Lost Pkts','Loss%','DR%','Jitter ms','CPU Sender','CPU Rcvr']
                 : ['Class','Sent Mbps','Rcv Mbps','DR%','RTT avg','RTT min','RTT max','σ','Retx','CWND(B)','CPU Sender','CPU Rcvr']
-              }.map(h => (
+              ).map(h => (
                 <th key={h} className="px-3 py-2 text-muted uppercase tracking-wider font-bold whitespace-nowrap">{h}</th>
               ))}
             </tr>
