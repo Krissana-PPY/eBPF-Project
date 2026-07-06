@@ -252,6 +252,12 @@ export default function DatasetPage() {
     (((proto === 'tcp' ? tcp : udp)?.[q]?.cpu as any)?.[key] ?? 0) as number;
 
   // TCP charts
+  const tcpSentData = TC_KEYS.map(tc => ({
+    name: TC_LABEL[tc],
+    'No QoS': +tcpVal('no_qos', tc, 'sentThroughputMbps').toFixed(1),
+    'HTB':    +tcpVal('htb',    tc, 'sentThroughputMbps').toFixed(1),
+    'eBPF':   +tcpVal('ebpf',   tc, 'sentThroughputMbps').toFixed(1),
+  }));
   const tcpTputData = TC_KEYS.map(tc => ({
     name: TC_LABEL[tc],
     'No QoS': +tcpVal('no_qos', tc, 'throughputMbps').toFixed(1),
@@ -266,6 +272,12 @@ export default function DatasetPage() {
   }));
 
   // UDP charts
+  const udpSentData = TC_KEYS.map(tc => ({
+    name: TC_LABEL[tc],
+    'No QoS': +udpVal('no_qos', tc, 'sentThroughputMbps').toFixed(1),
+    'HTB':    +udpVal('htb',    tc, 'sentThroughputMbps').toFixed(1),
+    'eBPF':   +udpVal('ebpf',   tc, 'sentThroughputMbps').toFixed(1),
+  }));
   const udpTputData = TC_KEYS.map(tc => ({
     name: TC_LABEL[tc],
     'No QoS': +udpVal('no_qos', tc, 'throughputMbps').toFixed(1),
@@ -438,7 +450,10 @@ export default function DatasetPage() {
       {/* ── TCP ANALYSIS ────────────────────────────────────────────────── */}
       {tcp && (
         <SECTION icon={BarChart2} title="TCP Analysis" tag="· iperf3 TCP · 30 s · CUBIC congestion control">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+            <GroupedBars title="Sent Throughput (Mbps) — client ACK-based rate" data={tcpSentData}
+              bars={[{ key:'No QoS',label:'No QoS',color:C.noqos },{ key:'HTB',label:'HTB',color:C.htb },{ key:'eBPF',label:'eBPF',color:C.ebpf }]}
+              unit=" Mbps" />
             <GroupedBars title="Received Throughput (Mbps) — server-side goodput" data={tcpTputData}
               bars={[{ key:'No QoS',label:'No QoS',color:C.noqos },{ key:'HTB',label:'HTB',color:C.htb },{ key:'eBPF',label:'eBPF',color:C.ebpf }]}
               unit=" Mbps" />
@@ -487,7 +502,10 @@ export default function DatasetPage() {
       {/* ── UDP ANALYSIS ────────────────────────────────────────────────── */}
       {udp && (
         <SECTION icon={Activity} title="UDP Analysis" tag="· iperf3 UDP · 30 s · no congestion control">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+            <GroupedBars title="Sent Throughput (Mbps) — client application rate" data={udpSentData}
+              bars={[{ key:'No QoS',label:'No QoS',color:C.noqos },{ key:'HTB',label:'HTB',color:C.htb },{ key:'eBPF',label:'eBPF',color:C.ebpf }]}
+              unit=" Mbps" />
             <GroupedBars title="Received Throughput (Mbps) — post-shaping goodput" data={udpTputData}
               bars={[{ key:'No QoS',label:'No QoS',color:C.noqos },{ key:'HTB',label:'HTB',color:C.htb },{ key:'eBPF',label:'eBPF',color:C.ebpf }]}
               unit=" Mbps" />
@@ -707,6 +725,10 @@ export default function DatasetPage() {
       {/* ── FULL COMPARISON TABLE ───────────────────────────────────────── */}
       {(tcp || udp) && (
         <SECTION icon={BarChart2} title="Full Comparison Table" tag="· all measurements · mode × protocol × class">
+          <p className="font-mono text-xs text-muted mb-3 leading-relaxed">
+            TCP: Sent ≈ Received (both are post-shaping — CUBIC adapts to kernel QoS).
+            UDP: Sent = application rate pushed to socket (pre-shaping); Received = actual server-side delivery (post-shaping). Gap shows QoS enforcement effect.
+          </p>
           <div className="overflow-x-auto card">
             <table className="w-full border-collapse font-mono text-xs">
               <thead>
