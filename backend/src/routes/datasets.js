@@ -706,7 +706,7 @@ router.get('/:id/report', async (req, res, next) => {
            AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`, [id, rptProto]),
       pool.query(
         `SELECT e.qos_type, e.traffic_class, i.interval_start, i.interval_end,
-                i.bits_per_second, i.rtt_us, i.retransmits, i.jitter_ms
+                i.bits_per_second, i.rtt_us, i.retransmits
          FROM iperf_intervals i JOIN experiments e ON e.id = i.experiment_id
          WHERE e.dataset_id = $1
            AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))
