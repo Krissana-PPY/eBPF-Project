@@ -66,13 +66,14 @@ function parseIperf(text) {
 
   const rtts = intervals.map(i => i.rttUs).filter(Boolean);
 
-  const sentBytes = sent.bytes     || 0;
-  const rcvBytes  = received.bytes || sentBytes; // fallback for UDP
+  const sentBytes = sent.bytes ?? 0;
+  // use ?? (not ||) so 0 bytes received is not replaced by sentBytes
+  const rcvBytes  = received.bytes ?? sentBytes;
 
   return {
     summary: {
       // receiver side — post-shaping goodput (primary throughput metric)
-      throughputMbps:     (received.bits_per_second || sent.bits_per_second) / 1e6 || 0,
+      throughputMbps:     (received.bits_per_second ?? sent.bits_per_second) / 1e6 || 0,
       rcvBytes,
       // sender side — pre-shaping application rate
       sentThroughputMbps: sent.bits_per_second / 1e6 || 0,
@@ -82,7 +83,7 @@ function parseIperf(text) {
       // RTT measured at sender via TCP ACK (inherently round-trip)
       avgRttUs:           mean(rtts),
       maxRttUs:           Math.max(...rtts, 0),
-      minRttUs:           Math.min(...rtts, Infinity) === Infinity ? 0 : Math.min(...rtts),
+      minRttUs:           rtts.length ? Math.min(...rtts) : 0,
       rttStdUs:           std(rtts),
       // sender-side counters
       retransmits:        sent.retransmits || 0,

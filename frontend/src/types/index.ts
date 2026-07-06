@@ -66,6 +66,8 @@ export interface DatasetSummary {
 }
 
 export interface Dataset extends DatasetSummary {
+  protocols:       string[];
+  primaryProtocol: string | null;
   metrics: {
     no_qos?: QosMetrics;
     htb?:    QosMetrics;

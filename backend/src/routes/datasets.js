@@ -46,12 +46,12 @@ router.get('/:id', async (req, res, next) => {
 
     const dataset = dsRes.rows[0];
 
-    // detect which protocols exist in this dataset
+    // detect which protocols exist in this dataset (no COALESCE — preserve NULL)
     const protoRes = await pool.query(
-      `SELECT DISTINCT COALESCE(protocol, 'tcp') AS protocol FROM experiments WHERE dataset_id = $1`, [id]
+      `SELECT DISTINCT protocol FROM experiments WHERE dataset_id = $1`, [id]
     );
-    const protocols = protoRes.rows.map(r => r.protocol);
-    // use first protocol found (prefer tcp), or null for mixed/unknown
+    const protocols = protoRes.rows.map(r => r.protocol).filter(Boolean);
+    // prefer tcp; fall back to first found; null means legacy rows with no protocol column
     const primaryProto = protocols.includes('tcp') ? 'tcp' : (protocols[0] || null);
 
     // iperf summaries — filter by primary protocol to avoid TCP/UDP mixing
@@ -233,13 +233,19 @@ router.get('/:id/mode/:qosType', async (req, res, next) => {
          ORDER BY e.traffic_class, i.interval_start`, [id, qosType, primaryProto]),
       pool.query(
         `SELECT c.* FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
-         WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY c.id`, [id, qosType]),
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
+         ORDER BY c.id`, [id, qosType, primaryProto]),
       pool.query(
         `SELECT h.* FROM htb_class_stats h JOIN experiments e ON e.id = h.experiment_id
-         WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY h.class_id`, [id, qosType]),
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
+         ORDER BY h.class_id`, [id, qosType, primaryProto]),
       pool.query(
         `SELECT m.* FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id
-         WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY m.class_key`, [id, qosType]),
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
+         ORDER BY m.class_key`, [id, qosType, primaryProto]),
     ]);
 
     // Build iperf object keyed by traffic_class
@@ -323,9 +329,21 @@ router.get('/:id/mode/:qosType/report', async (req, res, next) => {
            AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
          ORDER BY e.traffic_class, i.interval_start`,
         [id, qosType, primaryProto2]),
-      pool.query(`SELECT c.* FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY c.id`, [id, qosType]),
-      pool.query(`SELECT h.* FROM htb_class_stats h JOIN experiments e ON e.id = h.experiment_id WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY h.class_id`, [id, qosType]),
-      pool.query(`SELECT m.* FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id WHERE e.dataset_id = $1 AND e.qos_type = $2 ORDER BY m.class_key`, [id, qosType]),
+      pool.query(
+        `SELECT c.* FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
+         ORDER BY c.id`, [id, qosType, primaryProto2]),
+      pool.query(
+        `SELECT h.* FROM htb_class_stats h JOIN experiments e ON e.id = h.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
+         ORDER BY h.class_id`, [id, qosType, primaryProto2]),
+      pool.query(
+        `SELECT m.* FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = $2
+           AND (e.protocol = $3 OR ($3 IS NULL AND e.protocol IS NULL))
+         ORDER BY m.class_key`, [id, qosType, primaryProto2]),
     ]);
 
     const iperf = {};
@@ -376,29 +394,43 @@ router.get('/:id/report', async (req, res, next) => {
 
     const dataset = dsRes.rows[0];
 
+    // detect primary protocol (same logic as GET /:id)
+    const rptProtoRes = await pool.query(
+      `SELECT DISTINCT protocol FROM experiments WHERE dataset_id = $1`, [id]
+    );
+    const rptProtos = rptProtoRes.rows.map(r => r.protocol).filter(Boolean);
+    const rptProto  = rptProtos.includes('tcp') ? 'tcp' : (rptProtos[0] || null);
+
     const [iperfRes, cpuRes, htbRes, ebpfRes, intervalRes] = await Promise.all([
       pool.query(
         `SELECT e.qos_type, e.traffic_class, s.*
          FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id
-         WHERE e.dataset_id = $1`, [id]),
+         WHERE e.dataset_id = $1
+           AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`, [id, rptProto]),
       pool.query(
         `SELECT e.qos_type,
                 AVG(c.usr_pct)::float AS avg_usr, AVG(c.sys_pct)::float AS avg_sys,
                 AVG(c.soft_pct)::float AS avg_soft, AVG(c.idle_pct)::float AS avg_idle,
                 COUNT(*)::int AS samples
          FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
-         WHERE e.dataset_id = $1 GROUP BY e.qos_type`, [id]),
+         WHERE e.dataset_id = $1
+           AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))
+         GROUP BY e.qos_type`, [id, rptProto]),
       pool.query(
         `SELECT h.* FROM htb_class_stats h JOIN experiments e ON e.id = h.experiment_id
-         WHERE e.dataset_id = $1`, [id]),
+         WHERE e.dataset_id = $1
+           AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`, [id, rptProto]),
       pool.query(
         `SELECT m.* FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id
-         WHERE e.dataset_id = $1`, [id]),
+         WHERE e.dataset_id = $1
+           AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))`, [id, rptProto]),
       pool.query(
         `SELECT e.qos_type, e.traffic_class, i.interval_start, i.interval_end,
                 i.bits_per_second, i.rtt_us, i.retransmits
          FROM iperf_intervals i JOIN experiments e ON e.id = i.experiment_id
-         WHERE e.dataset_id = $1 ORDER BY e.qos_type, e.traffic_class, i.interval_start`, [id]),
+         WHERE e.dataset_id = $1
+           AND (e.protocol = $2 OR ($2 IS NULL AND e.protocol IS NULL))
+         ORDER BY e.qos_type, e.traffic_class, i.interval_start`, [id, rptProto]),
     ]);
 
     const metrics = {};
