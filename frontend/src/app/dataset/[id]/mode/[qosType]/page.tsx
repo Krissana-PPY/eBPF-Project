@@ -436,12 +436,12 @@ export default function ModePage() {
       {qosType === 'htb' && (data.htbClasses.length > 0 || Object.keys(data.htbClassesByProtocol ?? {}).length > 0) && (
         <SECTION icon={TrendingUp} title="HTB TC Class Stats">
           {Object.keys(data.htbClassesByProtocol ?? {}).length > 0
-            ? Object.entries(data.htbClassesByProtocol ?? {}).map(([proto, classes]) => (
+            ? Object.entries(data.htbClassesByProtocol ?? {}).map(([proto, classes]) => classes ? (
                 <div key={proto} className="mb-4">
                   <p className="font-mono text-xs font-bold uppercase tracking-wider text-muted mb-2">{proto.toUpperCase()}</p>
                   <HtbTable classes={classes} />
                 </div>
-              ))
+              ) : null)
             : <HtbTable classes={data.htbClasses} />
           }
         </SECTION>
@@ -451,12 +451,12 @@ export default function ModePage() {
       {qosType === 'ebpf' && (data.ebpfClasses.length > 0 || Object.keys(data.ebpfClassesByProtocol ?? {}).length > 0) && (
         <SECTION icon={AlertTriangle} title="eBPF Map Statistics (XDP counters)">
           {Object.keys(data.ebpfClassesByProtocol ?? {}).length > 0
-            ? Object.entries(data.ebpfClassesByProtocol ?? {}).map(([proto, classes]) => (
+            ? Object.entries(data.ebpfClassesByProtocol ?? {}).map(([proto, classes]) => classes ? (
                 <div key={proto} className="mb-6">
                   <p className="font-mono text-xs font-bold uppercase tracking-wider text-muted mb-2">{proto.toUpperCase()}</p>
                   <EbpfCards classes={classes} />
                 </div>
-              ))
+              ) : null)
             : <EbpfCards classes={data.ebpfClasses} />
           }
         </SECTION>
