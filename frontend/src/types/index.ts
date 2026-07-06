@@ -66,14 +66,16 @@ export interface DatasetSummary {
 }
 
 export interface Dataset extends DatasetSummary {
-  protocols:       string[];
-  primaryProtocol: string | null;
+  protocols:            string[];
+  primaryProtocol:      string | null;
   metrics: {
     no_qos?: QosMetrics;
     htb?:    QosMetrics;
     ebpf?:   QosMetrics;
   };
-  timeSeries: Record<string, TimePoint[]>;
+  metricsByProtocol:    Record<string, { no_qos?: QosMetrics; htb?: QosMetrics; ebpf?: QosMetrics }>;
+  timeSeries:           Record<string, TimePoint[]>;
+  timeSeriesByProtocol: Record<string, Record<string, TimePoint[]>>;
 }
 
 export interface TimePoint {
@@ -91,6 +93,7 @@ export interface ExperimentSummary {
   id:               number;
   dataset_id:       number;
   qos_type:         QosType;
+  protocol:         string | null;
   traffic_class:    TrafficClass | null;
   experiment_type:  ExperimentType;
   source_filename:  string | null;
@@ -175,14 +178,18 @@ export interface ModeIperfEntry {
 }
 
 export interface ModeData {
-  dataset_id:   number;
-  dataset_name: string;
-  qos_type:     QosType;
-  iperf:        Partial<Record<TrafficClass, ModeIperfEntry>>;
-  cpu:          { snapshots: CpuSnapshot[] };
-  htbClasses:   HtbClass[];
-  ebpfClasses:  EbpfClass[];
-  timeSeries:   Record<string, TimePoint[]>;
+  dataset_id:            number;
+  dataset_name:          string;
+  qos_type:              QosType;
+  iperf:                 Partial<Record<TrafficClass, ModeIperfEntry>>;
+  cpu:                   { snapshots: CpuSnapshot[] };
+  htbClasses:            HtbClass[];
+  ebpfClasses:           EbpfClass[];
+  timeSeries:            Record<string, TimePoint[]>;
+  iperfByProtocol:       Partial<Record<string, Partial<Record<TrafficClass, ModeIperfEntry>>>>;
+  cpuByProtocol:         Partial<Record<string, { snapshots: CpuSnapshot[] }>>;
+  htbClassesByProtocol:  Partial<Record<string, HtbClass[]>>;
+  ebpfClassesByProtocol: Partial<Record<string, EbpfClass[]>>;
 }
 
 export interface ExperimentDetail extends ExperimentSummary {
