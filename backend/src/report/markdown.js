@@ -72,7 +72,16 @@ function buildMarkdown(ds) {
     findings.push(`HTB reduces EF avg RTT by **${ratio}×** compared to No QoS (${fmt(efHtb.avgRttUs, 0)} µs).`);
   }
 
-  const ebpfCpu = m.ebpf?.cpu?.avgTotal;
+  // Delivery ratio comparison — core QoS effectiveness metric
+  const drEbpf  = efEbpf?.deliveryRatio;
+  const drHtb   = efHtb?.deliveryRatio;
+  const drNoQos = efNoQos?.deliveryRatio;
+  if (drEbpf != null && drHtb != null)
+    findings.push(`eBPF EF delivery ratio: **${fmt(drEbpf, 1)}%** vs HTB **${fmt(drHtb, 1)}%** — ${drEbpf >= drHtb ? 'eBPF preserves more packets through delay-based shaping' : 'HTB preserves more EF packets'}.`);
+  else if (drEbpf != null && drNoQos != null)
+    findings.push(`eBPF EF delivery ratio: **${fmt(drEbpf, 1)}%** (No QoS baseline: ${fmt(drNoQos, 1)}%).`);
+
+  const ebpfCpu  = m.ebpf?.cpu?.avgTotal;
   const noqosCpu = m.no_qos?.cpu?.avgTotal;
   if (ebpfCpu != null && noqosCpu != null) {
     const overhead = (ebpfCpu - noqosCpu).toFixed(2);
@@ -124,10 +133,11 @@ function buildMarkdown(ds) {
   // ── 3. Throughput ─────────────────────────────────────────────────────────
   lines.push('## 3. Throughput');
   lines.push('');
-  lines.push('All values in **Mbps**.');
+  lines.push('**Sent** = application rate at client before shaping. **Received** = actual goodput at server after shaping.');
+  lines.push('**Delivery Ratio** = Received / Sent × 100% — measures shaping efficiency (packet preservation).');
   lines.push('');
-  lines.push(tableRow(['QoS Method', 'Traffic Class', 'Throughput (Mbps)', 'Duration (s)', 'Retransmits', 'vs No QoS']));
-  lines.push(tableSep(6));
+  lines.push(tableRow(['QoS Method', 'Traffic Class', 'Sent (Mbps)', 'Received (Mbps)', 'Delivery Ratio', 'Retransmits', 'vs No QoS Rcv']));
+  lines.push(tableSep(7));
 
   for (const q of QOS_KEYS) {
     for (const tc of TC_KEYS) {
@@ -137,11 +147,13 @@ function buildMarkdown(ds) {
       const vs = (q !== 'no_qos' && base && d.throughputMbps)
         ? `${pct(d.throughputMbps, base).trim()}`
         : '—';
+      const drLabel = d.deliveryRatio != null ? `${fmt(d.deliveryRatio, 1)}%` : '—';
       lines.push(tableRow([
         QOS_LABELS[q],
         TC_LABELS[tc] || tc.toUpperCase(),
+        fmt(d.sentThroughputMbps),
         fmt(d.throughputMbps),
-        fmt(d.durationS, 0),
+        drLabel,
         fmtK(d.retransmits),
         vs,
       ]));
@@ -287,7 +299,15 @@ function buildMarkdown(ds) {
   if (efHtb && efEbpf && efEbpf.avgRttUs && efHtb.avgRttUs) {
     const diff = efEbpf.avgRttUs - efHtb.avgRttUs;
     const label = diff <= 0 ? 'lower' : 'higher';
-    conclusions.push(`**eBPF vs HTB**: eBPF EF RTT is ${Math.abs(diff).toFixed(0)} µs ${label} than HTB — ${diff <= 0 ? 'indicating superior real-time classification' : 'HTB has slightly lower EF latency but less flexibility'}.`);
+    conclusions.push(`**eBPF vs HTB latency**: eBPF EF RTT is ${Math.abs(diff).toFixed(0)} µs ${label} than HTB — ${diff <= 0 ? 'indicating superior real-time classification' : 'HTB has slightly lower EF latency but less flexibility'}.`);
+  }
+  // Delivery ratio — key metric: delay-based shaping should preserve more packets than drop-based
+  if (drEbpf != null && drHtb != null && drNoQos != null) {
+    const vsNoQos = (drNoQos - drEbpf).toFixed(1);
+    const vsHtb   = (drEbpf - drHtb).toFixed(1);
+    conclusions.push(`**Delivery ratio**: No QoS ${fmt(drNoQos, 1)}% → HTB ${fmt(drHtb, 1)}% → eBPF ${fmt(drEbpf, 1)}%. eBPF ${parseFloat(vsHtb) >= 0 ? `preserves ${vsHtb}% more packets than HTB` : `loses ${Math.abs(parseFloat(vsHtb)).toFixed(1)}% more than HTB`} due to ${parseFloat(vsHtb) >= 0 ? 'delay-based shaping vs drop-based' : 'stricter bandwidth enforcement'}.`);
+  } else if (drEbpf != null && drNoQos != null) {
+    conclusions.push(`**Delivery ratio**: eBPF EF = ${fmt(drEbpf, 1)}% vs No QoS ${fmt(drNoQos, 1)}% — ${(drNoQos - drEbpf).toFixed(1)}% overhead from shaping.`);
   }
   if (ebpfCpu != null && noqosCpu != null) {
     const overhead = (ebpfCpu - noqosCpu).toFixed(2);

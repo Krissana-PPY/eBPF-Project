@@ -46,20 +46,24 @@ function buildModeMarkdown(mode) {
   // ── 2. Traffic Class Results ──────────────────────────────────────────────
   lines.push('## 2. Traffic Class Performance');
   lines.push('');
-  lines.push(row(['Traffic Class', 'Throughput (Mbps)', 'Avg RTT (µs)', 'Min RTT', 'Max RTT', 'RTT σ', 'Retransmits', 'Duration (s)']));
-  lines.push(sep(8));
+  lines.push('> **Sent** = client application rate (before shaping). **Received** = server goodput (after shaping). **Delivery Ratio** = Rcv/Sent ×100%.');
+  lines.push('');
+  lines.push(row(['Traffic Class', 'Sent (Mbps)', 'Received (Mbps)', 'Delivery Ratio', 'Avg RTT (µs)', 'Min RTT', 'Max RTT', 'RTT σ', 'Retransmits']));
+  lines.push(sep(9));
   for (const tc of TC) {
     const s = iperf[tc]?.summary;
-    if (!s) { lines.push(row([TC_LABELS[tc], '—', '—', '—', '—', '—', '—', '—'])); continue; }
+    if (!s) { lines.push(row([TC_LABELS[tc], '—', '—', '—', '—', '—', '—', '—', '—'])); continue; }
+    const drLabel = s.delivery_ratio != null ? `${fmt(s.delivery_ratio, 1)}%` : '—';
     lines.push(row([
       TC_LABELS[tc],
+      fmt(s.sent_throughput_mbps),
       fmt(s.throughput_mbps),
+      drLabel,
       fmt(s.avg_rtt_us, 0),
       fmt(s.min_rtt_us, 0),
       fmt(s.max_rtt_us, 0),
       fmt(s.rtt_std_us, 0),
       fmtK(s.retransmits),
-      fmt(s.duration_s, 0),
     ]));
   }
   lines.push('');
@@ -67,22 +71,28 @@ function buildModeMarkdown(mode) {
   // ── 3. Throughput Analysis ────────────────────────────────────────────────
   lines.push('## 3. Throughput Analysis');
   lines.push('');
-  lines.push(row(['Traffic Class', 'Measured (Mbps)', 'P10 (Mbps)', 'P50 (Mbps)', 'P90 (Mbps)', 'Stability (σ/avg)']));
-  lines.push(sep(6));
+  lines.push('Per-second interval statistics are sender-side (iperf3 client measurements).');
+  lines.push('');
+  lines.push(row(['Traffic Class', 'Sent (Mbps)', 'Received (Mbps)', 'Delivery Ratio', 'P10', 'P50 (median)', 'P90', 'Stability (σ/avg)']));
+  lines.push(sep(8));
   for (const tc of TC) {
     const intervals = iperf[tc]?.intervals || [];
-    if (!intervals.length) { lines.push(row([TC_LABELS[tc], '—', '—', '—', '—', '—'])); continue; }
+    const s = iperf[tc]?.summary;
+    if (!intervals.length) { lines.push(row([TC_LABELS[tc], '—', '—', '—', '—', '—', '—', '—'])); continue; }
     const mbps   = intervals.map(iv => iv.bits_per_second / 1e6).filter(Boolean).sort((a, b) => a - b);
     const avg    = mbps.reduce((a, b) => a + b, 0) / mbps.length;
-    const std    = Math.sqrt(mbps.reduce((s, v) => s + (v - avg) ** 2, 0) / mbps.length);
+    const stdv   = Math.sqrt(mbps.reduce((sv, v) => sv + (v - avg) ** 2, 0) / mbps.length);
     const p      = pct => mbps[Math.floor(mbps.length * pct / 100)] ?? 0;
+    const drLabel = s?.delivery_ratio != null ? `${fmt(s.delivery_ratio, 1)}%` : '—';
     lines.push(row([
       TC_LABELS[tc],
-      fmt(iperf[tc]?.summary?.throughput_mbps),
+      fmt(s?.sent_throughput_mbps),
+      fmt(s?.throughput_mbps),
+      drLabel,
       fmt(p(10)),
       fmt(p(50)),
       fmt(p(90)),
-      avg > 0 ? `${(std / avg * 100).toFixed(1)}%` : '—',
+      avg > 0 ? `${(stdv / avg * 100).toFixed(1)}%` : '—',
     ]));
   }
   lines.push('');
@@ -229,13 +239,19 @@ function buildModeMarkdown(mode) {
     const rtts = TC.map(tc => iperf[tc]?.summary?.avg_rtt_us).filter(Boolean);
     if (rtts.length > 1) {
       const spread = (Math.max(...rtts) - Math.min(...rtts)).toFixed(0);
-      conclusions.push(`**RTT uniformity**: Without QoS, all traffic classes share the same queue. RTT spread across classes: ${spread} µs (expected to be near-zero with no differentiation).`);
+      conclusions.push(`**RTT uniformity**: Without QoS, all traffic classes share the same queue. RTT spread across classes: ${spread} µs (expected near-zero with no differentiation).`);
+    }
+    // Delivery ratio baseline — expect ~100% with no shaping
+    const drs = TC.map(tc => iperf[tc]?.summary?.delivery_ratio).filter(v => v != null);
+    if (drs.length) {
+      const avgDr = (drs.reduce((a, b) => a + b, 0) / drs.length).toFixed(1);
+      conclusions.push(`**Delivery baseline**: Average delivery ratio ${avgDr}% — this is the reference packet delivery without any shaping overhead.`);
     }
     conclusions.push(`**Baseline reference**: No QoS values serve as the control group. Any improvement in RTT or fairness in other modes should be measured against these numbers.`);
     const cpuTotal = cpu.snapshots?.length
       ? (cpu.snapshots.reduce((s, r) => s + (r.usr_pct || 0) + (r.sys_pct || 0) + (r.soft_pct || 0), 0) / cpu.snapshots.length).toFixed(2)
       : null;
-    if (cpuTotal) conclusions.push(`**Baseline CPU**: ${cpuTotal}% active CPU with no QoS overhead — this is the minimum cost of forwarding traffic.`);
+    if (cpuTotal) conclusions.push(`**Baseline CPU**: ${cpuTotal}% active CPU with no QoS overhead — minimum forwarding cost.`);
   }
 
   if (q === 'htb') {
@@ -245,27 +261,39 @@ function buildModeMarkdown(mode) {
       conclusions.push(`**Priority differentiation**: EF RTT (${fmt(efRtt, 0)} µs) vs BE RTT (${fmt(beRtt, 0)} µs) — spread of ${(beRtt - efRtt).toFixed(0)} µs shows HTB priority queue working.`);
     const dropped = htbClasses.reduce((s, c) => s + (c.dropped || 0), 0);
     if (dropped > 0)
-      conclusions.push(`**Rate enforcement**: ${fmtK(dropped)} packets dropped — classes are hitting their configured rate limits.`);
+      conclusions.push(`**Rate enforcement (drop-based)**: ${fmtK(dropped)} packets dropped — classes hitting configured rate limits. Delivery ratio degraded accordingly.`);
     else
       conclusions.push(`**Rate enforcement**: Zero drops — all traffic stayed within configured HTB limits during the test window.`);
+    // HTB delivery ratio per class
+    TC.forEach(tc => {
+      const s = iperf[tc]?.summary;
+      if (s?.delivery_ratio != null && s.delivery_ratio < 99)
+        conclusions.push(`**${TC_LABELS[tc]} delivery**: ${fmt(s.delivery_ratio, 1)}% — ${(100 - s.delivery_ratio).toFixed(1)}% of sent bytes were dropped/lost.`);
+    });
   }
 
   if (q === 'ebpf') {
     const efRtt  = iperf.ef?.summary?.avg_rtt_us;
     const beRtt  = iperf.be?.summary?.avg_rtt_us;
     const efMbps = iperf.ef?.summary?.throughput_mbps;
+    const efDr   = iperf.ef?.summary?.delivery_ratio;
+    const beDr   = iperf.be?.summary?.delivery_ratio;
     if (efRtt && beRtt)
-      conclusions.push(`**Latency priority**: EF RTT ${fmt(efRtt, 0)} µs, BE RTT ${fmt(beRtt, 0)} µs — eBPF XDP scheduler is providing priority queuing at the kernel level.`);
+      conclusions.push(`**Latency priority**: EF RTT ${fmt(efRtt, 0)} µs, BE RTT ${fmt(beRtt, 0)} µs — eBPF XDP scheduler providing priority queuing at kernel level.`);
     if (efMbps > 400)
-      conclusions.push(`**High-priority throughput**: EF class achieved ${fmt(efMbps)} Mbps — near line-rate for latency-sensitive traffic.`);
+      conclusions.push(`**High-priority throughput**: EF class achieved ${fmt(efMbps)} Mbps (server-received) — near line-rate for latency-sensitive traffic.`);
+    if (efDr != null)
+      conclusions.push(`**EF delivery ratio**: ${fmt(efDr, 1)}% — ${efDr >= 99 ? 'eBPF delivered EF traffic with near-zero packet loss (delay-based shaping)' : `${(100 - efDr).toFixed(1)}% packet overhead from shaping`}.`);
+    if (beDr != null && efDr != null && beDr < efDr)
+      conclusions.push(`**Traffic class fairness**: EF delivery ${fmt(efDr, 1)}% vs BE ${fmt(beDr, 1)}% — eBPF is correctly prioritising EF over BE at the expense of BE delivery.`);
     const totalEcn = ebpfClasses.reduce((s, c) => s + (Number(c.ecn_marked) || 0), 0);
     if (totalEcn > 0)
-      conclusions.push(`**Congestion management**: ${fmtK(totalEcn)} ECN marks across all classes — eBPF is actively signalling congestion without dropping packets.`);
+      conclusions.push(`**Congestion management**: ${fmtK(totalEcn)} ECN marks — eBPF signals congestion without dropping packets, preserving delivery ratio.`);
     const cpuTotal = cpu.snapshots?.length
       ? (cpu.snapshots.reduce((s, r) => s + (r.usr_pct || 0) + (r.sys_pct || 0) + (r.soft_pct || 0), 0) / cpu.snapshots.length).toFixed(2)
       : null;
     if (cpuTotal)
-      conclusions.push(`**CPU overhead**: ${cpuTotal}% active CPU with eBPF — the XDP program runs in kernel context with significant softirq processing.`);
+      conclusions.push(`**CPU overhead**: ${cpuTotal}% active CPU — XDP runs in kernel context; softirq load reflects per-packet eBPF program execution.`);
   }
 
   if (conclusions.length) {

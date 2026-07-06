@@ -1,15 +1,23 @@
 export interface IperfMetrics {
-  throughputMbps: number;
-  avgRttUs:       number;
-  maxRttUs:       number;
-  minRttUs:       number;
-  rttStdUs:       number;
-  retransmits:    number;
-  durationS:      number;
-  cpuHostTotal:   number;
-  cpuHostUser:    number;
-  cpuHostSystem:  number;
-  cpuRemoteTotal: number;
+  // receiver side (post-shaping actual goodput)
+  throughputMbps:     number;
+  rcvBytes:           number;
+  // sender side (pre-shaping application rate)
+  sentThroughputMbps: number | null;
+  sentBytes:          number;
+  // delivery efficiency
+  deliveryRatio:      number | null;
+  // RTT (sender TCP ACK — bidirectional)
+  avgRttUs:           number;
+  maxRttUs:           number;
+  minRttUs:           number;
+  rttStdUs:           number;
+  retransmits:        number;
+  durationS:          number;
+  cpuHostTotal:       number;
+  cpuHostUser:        number;
+  cpuHostSystem:      number;
+  cpuRemoteTotal:     number;
 }
 
 export interface CpuMetrics {
@@ -138,17 +146,25 @@ export interface EbpfClass {
 }
 
 export interface IperfSummaryRow {
-  throughput_mbps:  number;
-  avg_rtt_us:       number;
-  max_rtt_us:       number;
-  min_rtt_us:       number;
-  rtt_std_us:       number;
-  retransmits:      number;
-  duration_s:       number;
-  cpu_host_total:   number;
-  cpu_host_user:    number;
-  cpu_host_system:  number;
-  cpu_remote_total: number;
+  // receiver (post-shaping)
+  throughput_mbps:      number;
+  rcv_bytes:            number | null;
+  // sender (pre-shaping)
+  sent_throughput_mbps: number | null;
+  sent_bytes:           number | null;
+  // delivery efficiency
+  delivery_ratio:       number | null;
+  // RTT
+  avg_rtt_us:           number;
+  max_rtt_us:           number;
+  min_rtt_us:           number;
+  rtt_std_us:           number;
+  retransmits:          number;
+  duration_s:           number;
+  cpu_host_total:       number;
+  cpu_host_user:        number;
+  cpu_host_system:      number;
+  cpu_remote_total:     number;
 }
 
 export interface ModeIperfEntry {

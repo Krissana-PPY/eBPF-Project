@@ -119,17 +119,21 @@ router.get('/:id', async (req, res, next) => {
       const tc = row.traffic_class;
       if (!metrics[q]) metrics[q] = {};
       metrics[q][tc] = {
-        throughputMbps: row.throughput_mbps,
-        avgRttUs:       row.avg_rtt_us,
-        maxRttUs:       row.max_rtt_us,
-        minRttUs:       row.min_rtt_us,
-        rttStdUs:       row.rtt_std_us,
-        retransmits:    row.retransmits,
-        durationS:      row.duration_s,
-        cpuHostTotal:   row.cpu_host_total,
-        cpuHostUser:    row.cpu_host_user,
-        cpuHostSystem:  row.cpu_host_system,
-        cpuRemoteTotal: row.cpu_remote_total,
+        throughputMbps:     row.throughput_mbps,
+        rcvBytes:           Number(row.rcv_bytes)  || 0,
+        sentThroughputMbps: row.sent_throughput_mbps,
+        sentBytes:          Number(row.sent_bytes) || 0,
+        deliveryRatio:      row.delivery_ratio,
+        avgRttUs:           row.avg_rtt_us,
+        maxRttUs:           row.max_rtt_us,
+        minRttUs:           row.min_rtt_us,
+        rttStdUs:           row.rtt_std_us,
+        retransmits:        row.retransmits,
+        durationS:          row.duration_s,
+        cpuHostTotal:       row.cpu_host_total,
+        cpuHostUser:        row.cpu_host_user,
+        cpuHostSystem:      row.cpu_host_system,
+        cpuRemoteTotal:     row.cpu_remote_total,
       };
     }
 
@@ -244,7 +248,10 @@ router.get('/:id/mode/:qosType', async (req, res, next) => {
       const tc = row.traffic_class;
       iperf[tc] = {
         summary: {
-          throughput_mbps: row.throughput_mbps, avg_rtt_us: row.avg_rtt_us,
+          throughput_mbps: row.throughput_mbps, rcv_bytes: Number(row.rcv_bytes) || 0,
+          sent_throughput_mbps: row.sent_throughput_mbps, sent_bytes: Number(row.sent_bytes) || 0,
+          delivery_ratio: row.delivery_ratio,
+          avg_rtt_us: row.avg_rtt_us,
           max_rtt_us: row.max_rtt_us, min_rtt_us: row.min_rtt_us, rtt_std_us: row.rtt_std_us,
           retransmits: row.retransmits, duration_s: row.duration_s,
           cpu_host_total: row.cpu_host_total, cpu_host_user: row.cpu_host_user,
@@ -325,7 +332,10 @@ router.get('/:id/mode/:qosType/report', async (req, res, next) => {
     for (const row of iperfRes.rows) {
       iperf[row.traffic_class] = {
         summary: {
-          throughput_mbps: row.throughput_mbps, avg_rtt_us: row.avg_rtt_us,
+          throughput_mbps: row.throughput_mbps, rcv_bytes: Number(row.rcv_bytes) || 0,
+          sent_throughput_mbps: row.sent_throughput_mbps, sent_bytes: Number(row.sent_bytes) || 0,
+          delivery_ratio: row.delivery_ratio,
+          avg_rtt_us: row.avg_rtt_us,
           max_rtt_us: row.max_rtt_us, min_rtt_us: row.min_rtt_us, rtt_std_us: row.rtt_std_us,
           retransmits: row.retransmits, duration_s: row.duration_s,
           cpu_host_total: row.cpu_host_total, cpu_host_user: row.cpu_host_user,
@@ -396,11 +406,16 @@ router.get('/:id/report', async (req, res, next) => {
       const q = row.qos_type; const tc = row.traffic_class;
       if (!metrics[q]) metrics[q] = {};
       metrics[q][tc] = {
-        throughputMbps: row.throughput_mbps, avgRttUs: row.avg_rtt_us,
-        maxRttUs: row.max_rtt_us, minRttUs: row.min_rtt_us, rttStdUs: row.rtt_std_us,
-        retransmits: row.retransmits, durationS: row.duration_s,
-        cpuHostTotal: row.cpu_host_total, cpuHostUser: row.cpu_host_user,
-        cpuHostSystem: row.cpu_host_system, cpuRemoteTotal: row.cpu_remote_total,
+        throughputMbps:     row.throughput_mbps,
+        rcvBytes:           Number(row.rcv_bytes)  || 0,
+        sentThroughputMbps: row.sent_throughput_mbps,
+        sentBytes:          Number(row.sent_bytes) || 0,
+        deliveryRatio:      row.delivery_ratio,
+        avgRttUs:           row.avg_rtt_us,
+        maxRttUs:           row.max_rtt_us, minRttUs: row.min_rtt_us, rttStdUs: row.rtt_std_us,
+        retransmits:        row.retransmits, durationS: row.duration_s,
+        cpuHostTotal:       row.cpu_host_total, cpuHostUser: row.cpu_host_user,
+        cpuHostSystem:      row.cpu_host_system, cpuRemoteTotal: row.cpu_remote_total,
       };
     }
     for (const row of cpuRes.rows) {

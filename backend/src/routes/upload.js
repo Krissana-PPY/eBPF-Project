@@ -57,11 +57,19 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
           const s = data.summary;
           await client.query(
             `INSERT INTO iperf_summary
-             (experiment_id, throughput_mbps, avg_rtt_us, max_rtt_us, min_rtt_us, rtt_std_us,
-              retransmits, duration_s, cpu_host_total, cpu_host_user, cpu_host_system, cpu_remote_total)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-            [expId, s.throughputMbps, s.avgRttUs, s.maxRttUs, s.minRttUs, s.rttStdUs,
-             s.retransmits, s.durationS, s.cpuHostTotal, s.cpuHostUser, s.cpuHostSystem, s.cpuRemoteTotal]
+             (experiment_id,
+              throughput_mbps, rcv_bytes,
+              sent_throughput_mbps, sent_bytes, delivery_ratio,
+              avg_rtt_us, max_rtt_us, min_rtt_us, rtt_std_us,
+              retransmits, duration_s,
+              cpu_host_total, cpu_host_user, cpu_host_system, cpu_remote_total)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+            [expId,
+             s.throughputMbps,     s.rcvBytes,
+             s.sentThroughputMbps, s.sentBytes, s.deliveryRatio,
+             s.avgRttUs, s.maxRttUs, s.minRttUs, s.rttStdUs,
+             s.retransmits, s.durationS,
+             s.cpuHostTotal, s.cpuHostUser, s.cpuHostSystem, s.cpuRemoteTotal]
           );
           if (data.intervals?.length) {
             const vals = data.intervals.map((iv, i) => `($1,$${i*5+2},$${i*5+3},$${i*5+4},$${i*5+5},$${i*5+6})`).join(',');

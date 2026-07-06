@@ -19,19 +19,29 @@ CREATE TABLE IF NOT EXISTS experiments (
 );
 
 CREATE TABLE IF NOT EXISTS iperf_summary (
-    id               SERIAL PRIMARY KEY,
-    experiment_id    INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
-    throughput_mbps  FLOAT,
-    avg_rtt_us       FLOAT,
-    max_rtt_us       FLOAT,
-    min_rtt_us       FLOAT,
-    rtt_std_us       FLOAT,
-    retransmits      INTEGER,
-    duration_s       FLOAT,
-    cpu_host_total   FLOAT,
-    cpu_host_user    FLOAT,
-    cpu_host_system  FLOAT,
-    cpu_remote_total FLOAT
+    id                    SERIAL PRIMARY KEY,
+    experiment_id         INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+    -- receiver side (post-shaping actual goodput at server)
+    throughput_mbps       FLOAT,
+    rcv_bytes             BIGINT,
+    -- sender side (application rate before shaping at client)
+    sent_throughput_mbps  FLOAT,
+    sent_bytes            BIGINT,
+    -- delivery efficiency
+    delivery_ratio        FLOAT,   -- rcv_bytes / sent_bytes * 100
+    -- RTT (measured at sender via TCP ACK — inherently bidirectional)
+    avg_rtt_us            FLOAT,
+    max_rtt_us            FLOAT,
+    min_rtt_us            FLOAT,
+    rtt_std_us            FLOAT,
+    -- sender metrics
+    retransmits           INTEGER,
+    duration_s            FLOAT,
+    -- iperf3 CPU utilization
+    cpu_host_total        FLOAT,
+    cpu_host_user         FLOAT,
+    cpu_host_system       FLOAT,
+    cpu_remote_total      FLOAT
 );
 
 CREATE TABLE IF NOT EXISTS iperf_intervals (

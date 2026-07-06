@@ -83,10 +83,12 @@ export default function ModePage() {
 
   // Derived data
   const throughputChartData = TC_KEYS.map(tc => ({
-    tc: TC_LABEL[tc],
-    full: TC_FULL[tc],
-    mbps: data.iperf[tc]?.summary?.throughput_mbps ?? 0,
-    rtt:  data.iperf[tc]?.summary?.avg_rtt_us ?? 0,
+    tc:      TC_LABEL[tc],
+    full:    TC_FULL[tc],
+    sent:    data.iperf[tc]?.summary?.sent_throughput_mbps ?? 0,
+    rcv:     data.iperf[tc]?.summary?.throughput_mbps ?? 0,
+    dr:      data.iperf[tc]?.summary?.delivery_ratio ?? null,
+    rtt:     data.iperf[tc]?.summary?.avg_rtt_us ?? 0,
   }));
 
   const cpuAvgTotal = data.cpu.snapshots.length
@@ -138,18 +140,22 @@ export default function ModePage() {
       {/* ── Overview tiles ───────────────────────────────────── */}
       <SECTION icon={Info} title="Overview">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
-          <StatTile label="EF Throughput"
+          <StatTile label="EF Received"
             value={data.iperf.ef?.summary ? `${fmt(data.iperf.ef.summary.throughput_mbps)} Mbps` : '—'}
-            sub="Expedited Forwarding" />
+            sub={data.iperf.ef?.summary?.sent_throughput_mbps != null
+              ? `sent ${fmt(data.iperf.ef.summary.sent_throughput_mbps)} Mbps`
+              : 'server-side goodput'} />
+          <StatTile label="EF Delivery Ratio"
+            value={data.iperf.ef?.summary?.delivery_ratio != null
+              ? `${fmt(data.iperf.ef.summary.delivery_ratio, 1)}%`
+              : '—'}
+            sub="rcv / sent bytes" />
           <StatTile label="EF Avg RTT"
             value={data.iperf.ef?.summary ? `${fmt(data.iperf.ef.summary.avg_rtt_us, 0)} µs` : '—'}
             sub={bestRtt?.tc === 'ef' ? 'lowest RTT class' : undefined} />
           <StatTile label="CPU Active"
             value={cpuAvgTotal != null ? `${cpuAvgTotal.toFixed(2)}%` : '—'}
             sub={`${data.cpu.snapshots.length} sar samples`} />
-          <StatTile label="Traffic Classes"
-            value={TC_KEYS.filter(tc => data.iperf[tc]?.summary).length.toString()}
-            sub="with iperf3 data" />
         </div>
 
         {/* analysis callout */}
@@ -179,10 +185,11 @@ export default function ModePage() {
       </SECTION>
 
       {/* ── Throughput by traffic class ──────────────────────── */}
-      <SECTION icon={BarChart2} title="Throughput by Traffic Class (Mbps)">
+      <SECTION icon={BarChart2} title="Throughput by Traffic Class — Sent vs Received (Mbps)">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="card p-4">
-            <p className="font-mono text-xs text-muted mb-3">Avg throughput — EF / AF / BE</p>
+            <p className="font-mono text-xs text-muted mb-1">Sent (client) vs Received (server) — Mbps</p>
+            <p className="font-mono text-xs text-muted mb-3 opacity-60">Gap = bytes absorbed by shaping</p>
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={throughputChartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
@@ -190,9 +197,11 @@ export default function ModePage() {
                 <YAxis tick={{ fontSize: 10, fill: 'var(--color-muted)' }} unit=" Mbps" width={60} />
                 <Tooltip
                   contentStyle={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, fontSize: 11 }}
-                  formatter={(v: number, _n, props) => [`${v.toFixed(2)} Mbps`, props.payload?.full ?? 'Throughput']}
+                  formatter={(v: number, name: string) => [`${Number(v).toFixed(2)} Mbps`, name === 'sent' ? 'Sent (client)' : 'Received (server)']}
                 />
-                <Bar dataKey="mbps" radius={[3, 3, 0, 0]}>
+                <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} formatter={n => n === 'sent' ? 'Sent (client)' : 'Received (server)'} />
+                <Bar dataKey="sent" fill="var(--color-muted)" opacity={0.45} radius={[2, 2, 0, 0]} />
+                <Bar dataKey="rcv" radius={[3, 3, 0, 0]}>
                   {throughputChartData.map(entry => (
                     <Cell key={entry.tc} fill={TC_COLOR[entry.tc.toLowerCase()] ?? accentColor} />
                   ))}
@@ -202,19 +211,20 @@ export default function ModePage() {
           </div>
 
           <div className="card p-4">
-            <p className="font-mono text-xs text-muted mb-3">RTT comparison — EF / AF / BE (µs)</p>
+            <p className="font-mono text-xs text-muted mb-1">Delivery Ratio — % of sent bytes received</p>
+            <p className="font-mono text-xs text-muted mb-3 opacity-60">100% = no packet loss from shaping</p>
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={throughputChartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                 <XAxis dataKey="tc" tick={{ fontSize: 11, fill: 'var(--color-muted)' }} />
-                <YAxis tick={{ fontSize: 10, fill: 'var(--color-muted)' }} unit=" µs" width={58} />
+                <YAxis tick={{ fontSize: 10, fill: 'var(--color-muted)' }} unit="%" domain={[0, 100]} width={44} />
                 <Tooltip
                   contentStyle={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 4, fontSize: 11 }}
-                  formatter={(v: number, _n, props) => [`${v.toFixed(0)} µs`, props.payload?.full ?? 'RTT']}
+                  formatter={(v: number) => [`${Number(v).toFixed(1)}%`, 'Delivery Ratio']}
                 />
-                <Bar dataKey="rtt" radius={[3, 3, 0, 0]}>
+                <Bar dataKey="dr" radius={[3, 3, 0, 0]}>
                   {throughputChartData.map(entry => (
-                    <Cell key={entry.tc} fill={TC_COLOR[entry.tc.toLowerCase()] ?? accentColor} opacity={0.8} />
+                    <Cell key={entry.tc} fill={TC_COLOR[entry.tc.toLowerCase()] ?? accentColor} opacity={0.85} />
                   ))}
                 </Bar>
               </BarChart>
@@ -229,7 +239,7 @@ export default function ModePage() {
           <table className="w-full text-left border-collapse font-mono text-xs">
             <thead>
               <tr className="bg-surface border-b border-border">
-                {['Traffic Class', 'Throughput (Mbps)', 'Avg RTT (µs)', 'Min RTT', 'Max RTT', 'RTT σ', 'Retransmits', 'CPU Host %'].map(h => (
+                {['Traffic Class', 'Sent Mbps', 'Rcv Mbps', 'Delivery Ratio', 'Avg RTT (µs)', 'Min RTT', 'Max RTT', 'RTT σ', 'Retransmits', 'CPU Host %'].map(h => (
                   <th key={h} className="px-3 py-2 text-muted uppercase tracking-wider font-bold whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -237,12 +247,18 @@ export default function ModePage() {
             <tbody>
               {TC_KEYS.map(tc => {
                 const s = data.iperf[tc]?.summary;
+                const dr = s?.delivery_ratio;
+                const drColor = dr == null ? 'text-muted' : dr >= 99 ? 'text-green-400' : dr >= 95 ? 'text-yellow-400' : 'text-red-400';
                 return (
                   <tr key={tc} className="border-b border-border hover:bg-surface2">
                     <td className="px-3 py-2 font-bold" style={{ color: TC_COLOR[tc] }}>
                       {TC_LABEL[tc]} <span className="font-normal text-muted">— {TC_FULL[tc]}</span>
                     </td>
+                    <td className="px-3 py-2 text-muted">{s ? fmt(s.sent_throughput_mbps) : '—'}</td>
                     <td className="px-3 py-2 text-textdim font-semibold">{s ? fmt(s.throughput_mbps) : '—'}</td>
+                    <td className={`px-3 py-2 font-semibold ${drColor}`}>
+                      {dr != null ? `${fmt(dr, 1)}%` : '—'}
+                    </td>
                     <td className="px-3 py-2 text-textdim">{s ? fmt(s.avg_rtt_us, 0) : '—'}</td>
                     <td className="px-3 py-2 text-muted">{s ? fmt(s.min_rtt_us, 0) : '—'}</td>
                     <td className="px-3 py-2 text-muted">{s ? fmt(s.max_rtt_us, 0) : '—'}</td>

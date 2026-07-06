@@ -45,9 +45,8 @@ function detectFileType(filename) {
 function parseIperf(text) {
   const data     = JSON.parse(text);
   const end      = data.end || {};
-  // Use sum_received: eBPF shaping acts at client egress so the server
-  // receiver side reflects the true post-shaping throughput.
-  // Retransmits remain sender-side; fall back to sum_sent when sum_received absent (UDP).
+  // sum_received = actual goodput at server after eBPF/HTB shaping at client egress
+  // sum_sent     = application-level send rate before shaping
   const received = end.sum_received || {};
   const sent     = end.sum_sent     || {};
   const cpu      = end.cpu_utilization_percent || {};
@@ -61,25 +60,38 @@ function parseIperf(text) {
       bytes:         sum.bytes,
       bitsPerSecond: sum.bits_per_second,
       retransmits:   sum.retransmits || 0,
-      rttUs:         s.rtt,             // TCP RTT measured at sender via ACK — intentionally sender-side
+      rttUs:         s.rtt,   // TCP RTT via sender ACK — bidirectional by nature
     };
   });
 
   const rtts = intervals.map(i => i.rttUs).filter(Boolean);
 
+  const sentBytes = sent.bytes     || 0;
+  const rcvBytes  = received.bytes || sentBytes; // fallback for UDP
+
   return {
     summary: {
-      throughputMbps:  (received.bits_per_second || sent.bits_per_second) / 1e6 || 0,
-      avgRttUs:        mean(rtts),
-      maxRttUs:        Math.max(...rtts, 0),
-      minRttUs:        Math.min(...rtts, Infinity) === Infinity ? 0 : Math.min(...rtts),
-      rttStdUs:        std(rtts),
-      retransmits:     sent.retransmits || 0,   // retransmits are a sender metric
-      durationS:       (received.seconds || sent.seconds) || 0,
-      cpuHostTotal:    cpu.host_total   || 0,
-      cpuHostUser:     cpu.host_user    || 0,
-      cpuHostSystem:   cpu.host_system  || 0,
-      cpuRemoteTotal:  cpu.remote_total || 0,
+      // receiver side — post-shaping goodput (primary throughput metric)
+      throughputMbps:     (received.bits_per_second || sent.bits_per_second) / 1e6 || 0,
+      rcvBytes,
+      // sender side — pre-shaping application rate
+      sentThroughputMbps: sent.bits_per_second / 1e6 || 0,
+      sentBytes,
+      // delivery efficiency: what fraction of sent data reached the server
+      deliveryRatio:      sentBytes > 0 ? Math.min(100, (rcvBytes / sentBytes) * 100) : 100,
+      // RTT measured at sender via TCP ACK (inherently round-trip)
+      avgRttUs:           mean(rtts),
+      maxRttUs:           Math.max(...rtts, 0),
+      minRttUs:           Math.min(...rtts, Infinity) === Infinity ? 0 : Math.min(...rtts),
+      rttStdUs:           std(rtts),
+      // sender-side counters
+      retransmits:        sent.retransmits || 0,
+      durationS:          (received.seconds || sent.seconds) || 0,
+      // iperf3 CPU (host = sender, remote = receiver)
+      cpuHostTotal:       cpu.host_total   || 0,
+      cpuHostUser:        cpu.host_user    || 0,
+      cpuHostSystem:      cpu.host_system  || 0,
+      cpuRemoteTotal:     cpu.remote_total || 0,
     },
     intervals,
   };

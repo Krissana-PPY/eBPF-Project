@@ -51,23 +51,27 @@ function buildExpMarkdown(exp) {
 
     lines.push('## Summary Statistics');
     lines.push('');
-    lines.push(row(['Metric', 'Value']));
-    lines.push(sep(2));
-    lines.push(row(['Throughput', `${fmt(s.throughput_mbps)} Mbps`]));
-    lines.push(row(['Average RTT', `${fmt(s.avg_rtt_us, 0)} µs`]));
-    lines.push(row(['Minimum RTT', `${fmt(s.min_rtt_us, 0)} µs`]));
-    lines.push(row(['Maximum RTT', `${fmt(s.max_rtt_us, 0)} µs`]));
-    lines.push(row(['RTT Std Dev', `${fmt(s.rtt_std_us, 0)} µs`]));
-    lines.push(row(['Retransmits', fmtK(s.retransmits)]));
-    lines.push(row(['Duration', `${fmt(s.duration_s, 0)} s`]));
+    lines.push('> eBPF/HTB shaping acts at **client egress** — the server/receiver side shows the true post-shaping result.');
+    lines.push('');
+    lines.push(row(['Metric', 'Client (Sender)', 'Server (Receiver)', 'Note']));
+    lines.push(sep(4));
+    lines.push(row(['Throughput (Mbps)', fmt(s.sent_throughput_mbps), fmt(s.throughput_mbps), 'Rcv = actual goodput after shaping']));
+    lines.push(row(['Bytes transferred', fmtK(s.sent_bytes), fmtK(s.rcv_bytes), '']));
+    lines.push(row(['Delivery Ratio', '—', s.delivery_ratio != null ? `${fmt(s.delivery_ratio, 2)}%` : '—', 'Rcv / Sent × 100%']));
+    lines.push(row(['Avg RTT (µs)', `${fmt(s.avg_rtt_us, 0)}`, '(bidirectional)', 'TCP ACK round-trip']));
+    lines.push(row(['Min RTT (µs)', `${fmt(s.min_rtt_us, 0)}`, '—', '']));
+    lines.push(row(['Max RTT (µs)', `${fmt(s.max_rtt_us, 0)}`, '—', '']));
+    lines.push(row(['RTT Std Dev (µs)', `${fmt(s.rtt_std_us, 0)}`, '—', '']));
+    lines.push(row(['Retransmits', fmtK(s.retransmits), '—', 'Sender metric']));
+    lines.push(row(['Duration (s)', `${fmt(s.duration_s, 0)}`, '—', '']));
     lines.push('');
 
     lines.push('### CPU Utilization (iperf3 measurement)');
     lines.push('');
     lines.push(row(['Side', 'Total %', 'User %', 'System %']));
     lines.push(sep(4));
-    lines.push(row(['Host (sender)', fmt(s.cpu_host_total), fmt(s.cpu_host_user), fmt(s.cpu_host_system)]));
-    lines.push(row(['Remote (receiver)', fmt(s.cpu_remote_total), '—', '—']));
+    lines.push(row(['Host (sender/client)', fmt(s.cpu_host_total), fmt(s.cpu_host_user), fmt(s.cpu_host_system)]));
+    lines.push(row(['Remote (receiver/server)', fmt(s.cpu_remote_total), '—', '—']));
     lines.push('');
 
     // RTT analysis
