@@ -37,12 +37,13 @@ router.get('/:id', async (req, res, next) => {
     if (!expRes.rows.length) return res.status(404).json({ error: 'Experiment not found' });
     const exp = expRes.rows[0];
 
-    const [summaryRes, intervalsRes, cpuRes, htbRes, ebpfRes] = await Promise.all([
+    const [summaryRes, intervalsRes, cpuRes, htbRes, ebpfRes, bpfProgRes] = await Promise.all([
       pool.query('SELECT * FROM iperf_summary WHERE experiment_id = $1 LIMIT 1', [id]),
       pool.query('SELECT * FROM iperf_intervals WHERE experiment_id = $1 ORDER BY interval_start', [id]),
       pool.query('SELECT * FROM cpu_snapshots WHERE experiment_id = $1 ORDER BY id', [id]),
       pool.query('SELECT * FROM htb_class_stats WHERE experiment_id = $1 ORDER BY class_id', [id]),
       pool.query('SELECT * FROM ebpf_class_stats WHERE experiment_id = $1 ORDER BY class_key', [id]),
+      pool.query('SELECT * FROM bpf_prog_stats WHERE experiment_id = $1 ORDER BY prog_id', [id]),
     ]);
 
     res.json({
@@ -52,6 +53,7 @@ router.get('/:id', async (req, res, next) => {
       cpuSnapshots: cpuRes.rows,
       htbClasses:   htbRes.rows,
       ebpfClasses:  ebpfRes.rows,
+      bpfProgStats: bpfProgRes.rows,
     });
   } catch (err) { next(err); }
 });
@@ -69,12 +71,13 @@ router.get('/:id/report', async (req, res, next) => {
     if (!expRes.rows.length) return res.status(404).json({ error: 'Experiment not found' });
     const exp = expRes.rows[0];
 
-    const [summaryRes, intervalsRes, cpuRes, htbRes, ebpfRes] = await Promise.all([
+    const [summaryRes, intervalsRes, cpuRes, htbRes, ebpfRes, bpfProgRes] = await Promise.all([
       pool.query('SELECT * FROM iperf_summary WHERE experiment_id = $1 LIMIT 1', [id]),
       pool.query('SELECT * FROM iperf_intervals WHERE experiment_id = $1 ORDER BY interval_start', [id]),
       pool.query('SELECT * FROM cpu_snapshots WHERE experiment_id = $1 ORDER BY id', [id]),
       pool.query('SELECT * FROM htb_class_stats WHERE experiment_id = $1 ORDER BY class_id', [id]),
       pool.query('SELECT * FROM ebpf_class_stats WHERE experiment_id = $1 ORDER BY class_key', [id]),
+      pool.query('SELECT * FROM bpf_prog_stats WHERE experiment_id = $1 ORDER BY prog_id', [id]),
     ]);
 
     const detail = {
@@ -84,6 +87,7 @@ router.get('/:id/report', async (req, res, next) => {
       cpuSnapshots: cpuRes.rows,
       htbClasses:   htbRes.rows,
       ebpfClasses:  ebpfRes.rows,
+      bpfProgStats: bpfProgRes.rows,
     };
 
     const md   = buildExpMarkdown(detail);

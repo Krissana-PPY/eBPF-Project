@@ -13,7 +13,20 @@ function detectFileType(filename) {
   for (const q of QOS.sort((a, b) => b.length - a.length)) {
     if (name.startsWith(q + '_')) { qosType = q; break; }
   }
-  if (!qosType) return null;
+
+  if (!qosType) {
+    // borrow_tests/ scenario files — no no_qos/htb/ebpf prefix, e.g.
+    // "af_mid_borrow_zone.json", "af_mid_borrow_zone_before.json"/"_after.json".
+    // Dynamic borrowing only exists in eBPF mode, so qosType is fixed to 'ebpf'.
+    const m = name.match(/^(ef|af|be)_(.+?)(?:_(before|after))?\.json$/);
+    if (!m) return null;
+    const [, tc, scenario, phase] = m;
+    return {
+      qosType: 'ebpf', protocol: null, trafficClass: tc,
+      experimentType: phase ? 'ebpf_map' : 'iperf',
+      phase: phase || null, scenario,
+    };
+  }
 
   let protocol = null;
   for (const p of PROTO) {
@@ -22,27 +35,33 @@ function detectFileType(filename) {
     }
   }
 
+  if (name.includes('bpfprog') && (name.endsWith('_before.json') || name.endsWith('_after.json')))
+    return {
+      qosType, protocol, trafficClass: null, experimentType: 'bpf_prog',
+      phase: name.endsWith('_before.json') ? 'before' : 'after', scenario: null,
+    };
   if (name.includes('ebpf_stats') && name.endsWith('.json'))
-    return { qosType, protocol, trafficClass: null, experimentType: 'ebpf_map' };
+    return { qosType, protocol, trafficClass: null, experimentType: 'ebpf_map', phase: null, scenario: null };
   if (name.includes('tc_stats') && name.endsWith('.txt'))
-    return { qosType, protocol, trafficClass: null, experimentType: 'htb_tc' };
+    return { qosType, protocol, trafficClass: null, experimentType: 'htb_tc', phase: null, scenario: null };
   if (name.includes('cpu') && name.endsWith('.txt'))
-    return { qosType, protocol, trafficClass: null, experimentType: 'cpu' };
+    return { qosType, protocol, trafficClass: null, experimentType: 'cpu', phase: null, scenario: null };
 
   for (const tc of TC) {
     if (name.endsWith(`_${tc}.json`) || name.includes(`_${tc}.`))
-      return { qosType, protocol, trafficClass: tc, experimentType: 'iperf' };
+      return { qosType, protocol, trafficClass: tc, experimentType: 'iperf', phase: null, scenario: null };
   }
   return null;
 }
 
 // ── iperf3 JSON parser ──────────────────────────────────────────────────────
 function parseIperf(text) {
-  const data     = JSON.parse(text);
-  const end      = data.end || {};
-  const received = end.sum_received || {};
-  const sent     = end.sum_sent     || {};
-  const cpu      = end.cpu_utilization_percent || {};
+  const data       = JSON.parse(text);
+  const end        = data.end || {};
+  const received   = end.sum_received || {};
+  const sent       = end.sum_sent     || {};
+  const cpu        = end.cpu_utilization_percent || {};
+  const testStart  = data.start?.test_start || {};
 
   // TCP stream-level stats (stream 0, sender side)
   const streamSender = (end.streams || [])[0]?.sender || {};
@@ -102,6 +121,9 @@ function parseIperf(text) {
       rcvPackets:         received.packets      ?? null,
       sentPackets:        sent.packets          ?? null,
       lostPercent:        received.lost_percent ?? null,
+      // ── borrow-test demand point (target rate driven for this scenario) ──
+      targetBitrateMbps:  testStart.target_bitrate != null ? testStart.target_bitrate / 1e6 : null,
+      tos:                testStart.tos ?? null,
     },
     intervals,
   };
@@ -176,8 +198,28 @@ function parseEbpfMap(text) {
     borrowed:  entry.value.borrowed   || 0,
     ecnMarked: entry.value.ecn_marked || 0,
     delayed:   entry.value.delayed    || 0,
+    dropped:   entry.value.dropped    || 0,
   }));
   return { classes };
+}
+
+// ── bpftool prog show -j dump ────────────────────────────────────────────────
+// Filter to sched_cls programs — the QoS classifier itself ("classify_and_shape").
+// bpftool OMITS run_time_ns/run_cnt entirely when they're zero (e.g. the
+// "before" snapshot, freshly loaded, hasn't processed a packet yet) rather
+// than emitting 0 — treat absent as 0 so before/after pairing stays intact.
+function parseBpfProg(text) {
+  const data = JSON.parse(text);
+  const programs = data
+    .filter(p => p.type === 'sched_cls')
+    .map(p => ({
+      progId:    p.id,
+      progName:  p.name,
+      progType:  p.type,
+      runTimeNs: p.run_time_ns ?? 0,
+      runCnt:    p.run_cnt ?? 0,
+    }));
+  return { programs };
 }
 
 // ── Main parse dispatch ─────────────────────────────────────────────────────
@@ -190,6 +232,7 @@ function parseFile(filename, buffer) {
     case 'cpu':      return { meta, data: parseCpu(text) };
     case 'htb_tc':   return { meta, data: parseHtbTc(text) };
     case 'ebpf_map': return { meta, data: parseEbpfMap(text) };
+    case 'bpf_prog': return { meta, data: parseBpfProg(text) };
     default: throw new Error(`Unknown experiment type: ${meta.experimentType}`);
   }
 }

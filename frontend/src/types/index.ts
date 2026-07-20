@@ -34,18 +34,24 @@ export interface IperfMetrics {
   sentPackets:        number | null;
   rcvPackets:         number | null;
   lostPercent:        number | null;
+  // borrow-test demand point (target rate driven for this scenario)
+  targetBitrateMbps:  number | null;
+  tos:                number | null;
 }
 
 // ── SAR CPU aggregate ────────────────────────────────────────────────────────
 export interface CpuMetrics {
-  avgUsr:    number;
-  avgNice:   number;
-  avgSys:    number;
-  avgIowait: number;
-  avgSoft:   number;
-  avgIdle:   number;
-  avgTotal:  number;
-  samples:   number;
+  avgUsr:      number;
+  avgNice:     number;
+  avgSys:      number;
+  avgIowait:   number;
+  avgSoft:     number;
+  avgIdle:     number;
+  avgTotal:    number;
+  // peak/variance of (usr+sys+soft+iowait) per 1s sample — spike vs sustained load
+  peakTotal:   number | null;
+  stdDevTotal: number | null;
+  samples:     number;
 }
 
 // ── HTB tc class stats ───────────────────────────────────────────────────────
@@ -72,7 +78,31 @@ export interface EbpfClassStats {
   borrowed:       number;
   ecnMarked:      number;
   delayed:        number;
+  dropped:        number;
   throughputMbps: number;
+}
+
+// ── Borrow curve — per traffic_class × scenario demand point (eBPF only) ────
+export interface BorrowScenarioPoint {
+  traffic_class:        TrafficClass;
+  scenario:             string;
+  target_bitrate_mbps:  number | null;
+  throughput_mbps:      number | null;
+  sent_throughput_mbps: number | null;
+  delivery_ratio:       number | null;
+  packets_delta:        number | null;
+  borrowed_delta:       number | null;
+  delayed_delta:        number | null;
+  dropped_delta:        number | null;
+}
+
+// ── eBPF program runtime stats (bpftool prog show, before/after) ────────────
+export interface BpfProgStat {
+  protocol:    string;
+  trial_no:    number | null;
+  phase:       'before' | 'after';
+  run_time_ns: number;
+  run_cnt:     number;
 }
 
 // ── QoS aggregate (one mode, one protocol) ──────────────────────────────────
@@ -188,6 +218,7 @@ export interface EbpfClass {
   borrowed:   number;
   ecn_marked: number;
   delayed:    number;
+  dropped:    number;
 }
 
 // ── iperf summary row (snake_case — API shape for mode endpoint) ─────────────
@@ -217,6 +248,8 @@ export interface IperfSummaryRow {
   sent_packets:         number | null;
   rcv_packets:          number | null;
   lost_percent:         number | null;
+  target_bitrate_mbps:  number | null;
+  tos:                  number | null;
 }
 
 export interface ModeIperfEntry {
@@ -238,6 +271,8 @@ export interface ModeData {
   cpuByProtocol:         Partial<Record<string, { snapshots: CpuSnapshot[] }>>;
   htbClassesByProtocol:  Partial<Record<string, HtbClass[]>>;
   ebpfClassesByProtocol: Partial<Record<string, EbpfClass[]>>;
+  borrowCurve:           BorrowScenarioPoint[];
+  bpfProgStats:          BpfProgStat[];
 }
 
 // ── Experiment detail ────────────────────────────────────────────────────────
@@ -248,4 +283,8 @@ export interface ExperimentDetail extends ExperimentSummary {
   cpuSnapshots: CpuSnapshot[];
   htbClasses:   HtbClass[];
   ebpfClasses:  EbpfClass[];
+  bpfProgStats: BpfProgStat[];
+  phase?:       'before' | 'after' | null;
+  scenario?:    string | null;
+  trial_no?:    number | null;
 }

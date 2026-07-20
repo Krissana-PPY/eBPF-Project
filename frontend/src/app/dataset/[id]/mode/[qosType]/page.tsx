@@ -11,6 +11,9 @@ import {
 } from 'recharts';
 import { api } from '@/lib/api';
 import type { ModeData, QosType, TrafficClass, ModeIperfEntry, IperfSummaryRow } from '@/types';
+import BorrowCurveChart from '@/components/BorrowCurveChart';
+import LossAttributionChart from '@/components/LossAttributionChart';
+import BpfCostCard from '@/components/BpfCostCard';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const QOS_META: Record<QosType, { label: string; color: string; accent: string; desc: string }> = {
@@ -430,6 +433,21 @@ export default function ModePage() {
               ));
             })()}
           </div>
+          {/* Peak / variance — answers "spike vs sustained" ────────────────── */}
+          {cpuSnapshots.length > 1 && (() => {
+            const totals   = cpuSnapshots.map(s => (s.usr_pct || 0) + (s.sys_pct || 0) + (s.soft_pct || 0) + (s.iowait_pct || 0));
+            const meanTot  = totals.reduce((a, b) => a + b, 0) / totals.length;
+            const peakTot  = Math.max(...totals);
+            const stdTot   = Math.sqrt(totals.reduce((s, v) => s + (v - meanTot) ** 2, 0) / totals.length);
+            const spiky    = meanTot > 0 && peakTot / meanTot > 1.8;
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                <StatTile label="Peak Total (1s sample)" value={`${peakTot.toFixed(2)}%`} sub="highest single second" color={spiky ? 'text-yellow-400' : undefined} />
+                <StatTile label="Std Dev (1s samples)" value={`${stdTot.toFixed(2)}%`} sub={`n=${totals.length} samples`} />
+                <StatTile label="Load Pattern" value={spiky ? 'Spiky' : 'Sustained'} sub={spiky ? 'peak ≫ mean' : 'peak ≈ mean'} color={spiky ? 'text-yellow-400' : undefined} />
+              </div>
+            );
+          })()}
           {cpuTimelineData.length > 0 && (
             <div className="card p-4">
               <p className="font-mono text-xs text-muted mb-3">CPU timeline — {cpuSnapshots.length} sar snapshots</p>
@@ -485,6 +503,40 @@ export default function ModePage() {
               ) : null)
             : <EbpfCards classes={data.ebpfClasses} />
           }
+          {(() => {
+            const allEbpfClasses = Object.values(data.ebpfClassesByProtocol ?? {}).flat().filter(Boolean).length
+              ? Object.values(data.ebpfClassesByProtocol ?? {}).flat().filter((c): c is NonNullable<typeof c> => !!c)
+              : data.ebpfClasses;
+            return allEbpfClasses.length > 0 ? (
+              <div className="mt-6">
+                <p className="font-mono text-xs text-muted uppercase tracking-wider mb-3">Loss Attribution — Dropped / Delayed / Borrowed (% of packets)</p>
+                <div className="card p-4">
+                  <LossAttributionChart ebpfClasses={allEbpfClasses} />
+                </div>
+              </div>
+            ) : null;
+          })()}
+        </SECTION>
+      )}
+
+      {/* ── Dynamic Borrowing — per demand point (eBPF only) ─────────────── */}
+      {qosType === 'ebpf' && data.borrowCurve.length > 0 && (
+        <SECTION icon={TrendingUp} title="Dynamic Borrowing — Per Demand Point" tag="· below → at → mid → ceiling → above guaranteed rate">
+          <p className="font-mono text-xs text-muted mb-4">
+            Each point is a dedicated single-class run driven at a target rate relative to that class&apos;s guaranteed/ceiling thresholds.
+            Borrowed Δ (after − before eBPF map snapshot) should stay near zero below the guaranteed rate and rise once demand crosses it — proving borrowing activates dynamically rather than always-on.
+          </p>
+          <BorrowCurveChart borrowCurve={data.borrowCurve} />
+        </SECTION>
+      )}
+
+      {/* ── eBPF per-packet cost (ns) ─────────────────────────────────────── */}
+      {qosType === 'ebpf' && data.bpfProgStats.length > 0 && (
+        <SECTION icon={Cpu} title="eBPF Per-Packet Cost" tag="· classify_and_shape · run_time_ns / run_cnt delta">
+          <p className="font-mono text-xs text-muted mb-4">
+            Isolates the classifier&apos;s own CPU cost per packet from overall throughput — a stable ns/packet figure across trials means the code itself is cheap and CPU usage tracks packet rate, not classifier overhead.
+          </p>
+          <BpfCostCard bpfProgStats={data.bpfProgStats} />
         </SECTION>
       )}
     </div>
@@ -534,6 +586,7 @@ function EbpfCards({ classes }: { classes: import('@/types').EbpfClass[] }) {
   const totalEcn = classes.reduce((s, c) => s + (c.ecn_marked || 0), 0);
   const totalDly = classes.reduce((s, c) => s + (c.delayed || 0), 0);
   const totalBor = classes.reduce((s, c) => s + (c.borrowed || 0), 0);
+  const totalDrp = classes.reduce((s, c) => s + (c.dropped || 0), 0);
   return (
     <>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
@@ -551,6 +604,7 @@ function EbpfCards({ classes }: { classes: import('@/types').EbpfClass[] }) {
                 ['borrowed',   Number(c.borrowed).toLocaleString(),   c.borrowed > 0],
                 ['ECN marked', Number(c.ecn_marked).toLocaleString(), c.ecn_marked > 0],
                 ['delayed',    Number(c.delayed).toLocaleString(),    c.delayed > 0],
+                ['dropped',    Number(c.dropped).toLocaleString(),    c.dropped > 0],
               ] as [string, string, boolean][]).map(([k, v, hi]) => (
                 <div key={k} className="flex justify-between items-baseline py-1.5 border-b border-border last:border-0 font-mono text-xs">
                   <span className="text-muted">{k}</span>
@@ -561,11 +615,12 @@ function EbpfCards({ classes }: { classes: import('@/types').EbpfClass[] }) {
           );
         })}
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
         {([
           ['Total ECN Marks',  totalEcn, 'Active congestion signalling'],
           ['Total Delayed',    totalDly, 'Packet shaping events'],
           ['Total Borrowed',   totalBor, 'Bandwidth borrowing events'],
+          ['Total Dropped',    totalDrp, 'Packets dropped by classifier'],
         ] as [string, number, string][]).map(([label, val, note]) => (
           <div key={label} className="card p-3 text-center">
             <p className="font-mono text-xs text-muted uppercase tracking-wider mb-1">{label}</p>

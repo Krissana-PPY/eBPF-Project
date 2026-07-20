@@ -46,6 +46,12 @@ export default function CPUCards({ metrics }: Props) {
                 <BarRow label="%sys"  value={cpu.avgSys}  color={color} />
                 <BarRow label="%soft" value={cpu.avgSoft} color={color} />
                 <BarRow label="%idle" value={cpu.avgIdle} color={color} />
+                {(cpu.peakTotal != null || cpu.stdDevTotal != null) && (
+                  <div className="flex justify-between font-mono text-xs text-muted pt-2 mt-1 border-t border-border">
+                    <span>peak {cpu.peakTotal != null ? cpu.peakTotal.toFixed(1) : '—'}%</span>
+                    <span>σ {cpu.stdDevTotal != null ? cpu.stdDevTotal.toFixed(1) : '—'}%</span>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-muted text-xs font-mono">ไม่มีข้อมูล CPU</p>

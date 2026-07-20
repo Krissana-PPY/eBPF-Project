@@ -54,14 +54,18 @@ function mkCpuMetric(row) {
   const iowait = row.avg_iowait || 0;
   const nice   = row.avg_nice   || 0;
   return {
-    avgUsr:    usr,
-    avgNice:   nice,
-    avgSys:    sys,
-    avgIowait: iowait,
-    avgSoft:   soft,
-    avgIdle:   row.avg_idle || 0,
-    avgTotal:  usr + sys + soft + iowait + nice,
-    samples:   row.samples,
+    avgUsr:     usr,
+    avgNice:    nice,
+    avgSys:     sys,
+    avgIowait:  iowait,
+    avgSoft:    soft,
+    avgIdle:    row.avg_idle || 0,
+    avgTotal:   usr + sys + soft + iowait + nice,
+    // peak/variance of (usr+sys+soft+iowait) per 1s sample — answers
+    // "is CPU high because of spikes, or high throughout?"
+    peakTotal:   row.peak_total   ?? null,
+    stdDevTotal: row.stddev_total ?? null,
+    samples:    row.samples,
   };
 }
 
@@ -148,6 +152,8 @@ router.get('/:id', async (req, res, next) => {
               AVG(c.iowait_pct)::float  AS avg_iowait,
               AVG(c.soft_pct)::float    AS avg_soft,
               AVG(c.idle_pct)::float    AS avg_idle,
+              MAX(c.usr_pct + c.sys_pct + c.soft_pct + c.iowait_pct)::float        AS peak_total,
+              STDDEV_POP(c.usr_pct + c.sys_pct + c.soft_pct + c.iowait_pct)::float AS stddev_total,
               COUNT(*)::int             AS samples
        FROM cpu_snapshots c
        JOIN experiments e ON e.id = c.experiment_id
@@ -223,6 +229,7 @@ router.get('/:id', async (req, res, next) => {
           borrowed:      row.borrowed,
           ecnMarked:     row.ecn_marked,
           delayed:       row.delayed,
+          dropped:       row.dropped,
           throughputMbps: (row.bytes * 8) / 30 / 1e6,
         };
       }
@@ -255,6 +262,8 @@ router.get('/:id', async (req, res, next) => {
                 AVG(c.iowait_pct)::float AS avg_iowait,
                 AVG(c.soft_pct)::float   AS avg_soft,
                 AVG(c.idle_pct)::float   AS avg_idle,
+                MAX(c.usr_pct + c.sys_pct + c.soft_pct + c.iowait_pct)::float        AS peak_total,
+                STDDEV_POP(c.usr_pct + c.sys_pct + c.soft_pct + c.iowait_pct)::float AS stddev_total,
                 COUNT(*)::int            AS samples
          FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
          WHERE e.dataset_id = $1 AND e.protocol IS NOT NULL
@@ -304,7 +313,7 @@ router.get('/:id', async (req, res, next) => {
       if (!metricsByProtocol[p].ebpf.mapStats) metricsByProtocol[p].ebpf.mapStats = {};
       metricsByProtocol[p].ebpf.mapStats[row.class_name] = {
         classKey: row.class_key, packets: row.packets, bytes: row.bytes,
-        borrowed: row.borrowed, ecnMarked: row.ecn_marked, delayed: row.delayed,
+        borrowed: row.borrowed, ecnMarked: row.ecn_marked, delayed: row.delayed, dropped: row.dropped,
         throughputMbps: (row.bytes * 8) / 30 / 1e6,
       };
     }
@@ -494,7 +503,57 @@ router.get('/:id/mode/:qosType', async (req, res, next) => {
     for (const row of mpModeEbpfRes.rows) {
       const p = row.protocol;
       if (!ebpfClassesByProtocol[p]) ebpfClassesByProtocol[p] = [];
-      ebpfClassesByProtocol[p].push({ id: row.id, class_key: row.class_key, class_name: row.class_name, packets: row.packets, bytes: row.bytes, borrowed: row.borrowed, ecn_marked: row.ecn_marked, delayed: row.delayed });
+      ebpfClassesByProtocol[p].push({ id: row.id, class_key: row.class_key, class_name: row.class_name, packets: row.packets, bytes: row.bytes, borrowed: row.borrowed, ecn_marked: row.ecn_marked, delayed: row.delayed, dropped: row.dropped });
+    }
+
+    // ── Borrow curve (eBPF only) — per traffic_class × scenario demand point,
+    // pairs the scenario's iperf run with its before/after eBPF map delta to
+    // prove borrowing only kicks in at/above the guaranteed rate ────────────
+    let borrowCurve = [];
+    let bpfProgStats = [];
+    if (qosType === 'ebpf') {
+      const borrowRes = await pool.query(
+        `WITH borrow_iperf AS (
+           SELECT e.traffic_class, e.scenario,
+                  s.target_bitrate_mbps, s.throughput_mbps, s.sent_throughput_mbps, s.delivery_ratio
+           FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id
+           WHERE e.dataset_id = $1 AND e.qos_type = 'ebpf' AND e.scenario IS NOT NULL AND e.experiment_type = 'iperf'
+         ),
+         borrow_before AS (
+           SELECT e.traffic_class, e.scenario, m.packets, m.borrowed, m.delayed, m.dropped
+           FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id
+           WHERE e.dataset_id = $1 AND e.qos_type = 'ebpf' AND e.scenario IS NOT NULL AND e.phase = 'before'
+             AND m.class_name = UPPER(e.traffic_class)
+         ),
+         borrow_after AS (
+           SELECT e.traffic_class, e.scenario, m.packets, m.borrowed, m.delayed, m.dropped
+           FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id
+           WHERE e.dataset_id = $1 AND e.qos_type = 'ebpf' AND e.scenario IS NOT NULL AND e.phase = 'after'
+             AND m.class_name = UPPER(e.traffic_class)
+         )
+         SELECT i.traffic_class, i.scenario, i.target_bitrate_mbps, i.throughput_mbps,
+                i.sent_throughput_mbps, i.delivery_ratio,
+                (a.packets  - b.packets)  AS packets_delta,
+                (a.borrowed - b.borrowed) AS borrowed_delta,
+                (a.delayed  - b.delayed)  AS delayed_delta,
+                (a.dropped  - b.dropped)  AS dropped_delta
+         FROM borrow_iperf i
+         LEFT JOIN borrow_before b ON b.traffic_class = i.traffic_class AND b.scenario = i.scenario
+         LEFT JOIN borrow_after  a ON a.traffic_class = i.traffic_class AND a.scenario = i.scenario`,
+        [id]
+      );
+      borrowCurve = borrowRes.rows;
+
+      // ── eBPF per-packet cost (ns) — classify_and_shape run_time_ns/run_cnt
+      // delta between before/after bpftool snapshots, per protocol × trial ──
+      const bpfRes = await pool.query(
+        `SELECT e.protocol, e.trial_no, e.phase, p.run_time_ns, p.run_cnt
+         FROM bpf_prog_stats p JOIN experiments e ON e.id = p.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = 'ebpf' AND p.prog_name = 'classify_and_shape'
+         ORDER BY e.protocol, e.trial_no, e.phase`,
+        [id]
+      );
+      bpfProgStats = bpfRes.rows;
     }
 
     res.json({
@@ -510,6 +569,8 @@ router.get('/:id/mode/:qosType', async (req, res, next) => {
       cpuByProtocol,
       htbClassesByProtocol,
       ebpfClassesByProtocol,
+      borrowCurve,
+      bpfProgStats,
     });
   } catch (err) { next(err); }
 });
@@ -645,6 +706,51 @@ router.get('/:id/mode/:qosType/report', async (req, res, next) => {
       ebpfClassesByProtocol2[p].push(row);
     }
 
+    let borrowCurve2 = [];
+    let bpfProgStats2 = [];
+    if (qosType === 'ebpf') {
+      const borrowRes2 = await pool.query(
+        `WITH borrow_iperf AS (
+           SELECT e.traffic_class, e.scenario,
+                  s.target_bitrate_mbps, s.throughput_mbps, s.sent_throughput_mbps, s.delivery_ratio
+           FROM iperf_summary s JOIN experiments e ON e.id = s.experiment_id
+           WHERE e.dataset_id = $1 AND e.qos_type = 'ebpf' AND e.scenario IS NOT NULL AND e.experiment_type = 'iperf'
+         ),
+         borrow_before AS (
+           SELECT e.traffic_class, e.scenario, m.packets, m.borrowed, m.delayed, m.dropped
+           FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id
+           WHERE e.dataset_id = $1 AND e.qos_type = 'ebpf' AND e.scenario IS NOT NULL AND e.phase = 'before'
+             AND m.class_name = UPPER(e.traffic_class)
+         ),
+         borrow_after AS (
+           SELECT e.traffic_class, e.scenario, m.packets, m.borrowed, m.delayed, m.dropped
+           FROM ebpf_class_stats m JOIN experiments e ON e.id = m.experiment_id
+           WHERE e.dataset_id = $1 AND e.qos_type = 'ebpf' AND e.scenario IS NOT NULL AND e.phase = 'after'
+             AND m.class_name = UPPER(e.traffic_class)
+         )
+         SELECT i.traffic_class, i.scenario, i.target_bitrate_mbps, i.throughput_mbps,
+                i.sent_throughput_mbps, i.delivery_ratio,
+                (a.packets  - b.packets)  AS packets_delta,
+                (a.borrowed - b.borrowed) AS borrowed_delta,
+                (a.delayed  - b.delayed)  AS delayed_delta,
+                (a.dropped  - b.dropped)  AS dropped_delta
+         FROM borrow_iperf i
+         LEFT JOIN borrow_before b ON b.traffic_class = i.traffic_class AND b.scenario = i.scenario
+         LEFT JOIN borrow_after  a ON a.traffic_class = i.traffic_class AND a.scenario = i.scenario`,
+        [id]
+      );
+      borrowCurve2 = borrowRes2.rows;
+
+      const bpfRes2 = await pool.query(
+        `SELECT e.protocol, e.trial_no, e.phase, p.run_time_ns, p.run_cnt
+         FROM bpf_prog_stats p JOIN experiments e ON e.id = p.experiment_id
+         WHERE e.dataset_id = $1 AND e.qos_type = 'ebpf' AND p.prog_name = 'classify_and_shape'
+         ORDER BY e.protocol, e.trial_no, e.phase`,
+        [id]
+      );
+      bpfProgStats2 = bpfRes2.rows;
+    }
+
     const modeData = {
       dataset_id: dataset.id, dataset_name: dataset.name, qos_type: qosType,
       iperf, cpu: { snapshots: cpuRes.rows },
@@ -653,6 +759,8 @@ router.get('/:id/mode/:qosType/report', async (req, res, next) => {
       iperfByProtocol: iperfByProtocol2,
       htbClassesByProtocol: htbClassesByProtocol2,
       ebpfClassesByProtocol: ebpfClassesByProtocol2,
+      borrowCurve: borrowCurve2,
+      bpfProgStats: bpfProgStats2,
     };
     const md  = buildModeMarkdown(modeData);
     const slug = `${qosType}-mode-${dataset.id}`;
@@ -691,6 +799,8 @@ router.get('/:id/report', async (req, res, next) => {
                 AVG(c.usr_pct)::float AS avg_usr, AVG(c.nice_pct)::float AS avg_nice,
                 AVG(c.sys_pct)::float AS avg_sys, AVG(c.iowait_pct)::float AS avg_iowait,
                 AVG(c.soft_pct)::float AS avg_soft, AVG(c.idle_pct)::float AS avg_idle,
+                MAX(c.usr_pct + c.sys_pct + c.soft_pct + c.iowait_pct)::float        AS peak_total,
+                STDDEV_POP(c.usr_pct + c.sys_pct + c.soft_pct + c.iowait_pct)::float AS stddev_total,
                 COUNT(*)::int AS samples
          FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
          WHERE e.dataset_id = $1
@@ -722,6 +832,8 @@ router.get('/:id/report', async (req, res, next) => {
                 AVG(c.usr_pct)::float AS avg_usr, AVG(c.nice_pct)::float AS avg_nice,
                 AVG(c.sys_pct)::float AS avg_sys, AVG(c.iowait_pct)::float AS avg_iowait,
                 AVG(c.soft_pct)::float AS avg_soft, AVG(c.idle_pct)::float AS avg_idle,
+                MAX(c.usr_pct + c.sys_pct + c.soft_pct + c.iowait_pct)::float        AS peak_total,
+                STDDEV_POP(c.usr_pct + c.sys_pct + c.soft_pct + c.iowait_pct)::float AS stddev_total,
                 COUNT(*)::int AS samples
          FROM cpu_snapshots c JOIN experiments e ON e.id = c.experiment_id
          WHERE e.dataset_id = $1 AND e.protocol IS NOT NULL
@@ -757,6 +869,7 @@ router.get('/:id/report', async (req, res, next) => {
         avgUsr: row.avg_usr, avgNice: row.avg_nice, avgSys: row.avg_sys,
         avgIowait: row.avg_iowait, avgSoft: row.avg_soft, avgIdle: row.avg_idle,
         avgTotal: (row.avg_usr || 0) + (row.avg_nice || 0) + (row.avg_sys || 0) + (row.avg_iowait || 0) + (row.avg_soft || 0),
+        peakTotal: row.peak_total ?? null, stdDevTotal: row.stddev_total ?? null,
         samples: row.samples,
       };
     }
@@ -792,7 +905,7 @@ router.get('/:id/report', async (req, res, next) => {
       for (const row of ebpfRes.rows) {
         metrics.ebpf.mapStats[row.class_name] = {
           classKey: row.class_key, packets: row.packets, bytes: row.bytes,
-          borrowed: row.borrowed, ecnMarked: row.ecn_marked, delayed: row.delayed,
+          borrowed: row.borrowed, ecnMarked: row.ecn_marked, delayed: row.delayed, dropped: row.dropped,
           throughputMbps: (row.bytes * 8) / 30 / 1e6,
         };
       }

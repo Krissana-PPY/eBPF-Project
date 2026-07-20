@@ -2,7 +2,11 @@
 
 const QOS_LABELS = { no_qos: 'No QoS', htb: 'HTB', ebpf: 'eBPF' };
 const TC_LABELS  = { ef: 'EF — Expedited Forwarding', af: 'AF — Assured Forwarding', be: 'BE — Best Effort' };
-const EXP_LABELS = { iperf: 'iperf3 TCP Throughput Test', cpu: 'CPU Utilization (sar)', htb_tc: 'HTB TC Class Statistics', ebpf_map: 'eBPF Map Statistics' };
+const EXP_LABELS = { iperf: 'iperf3 TCP Throughput Test', cpu: 'CPU Utilization (sar)', htb_tc: 'HTB TC Class Statistics', ebpf_map: 'eBPF Map Statistics', bpf_prog: 'eBPF Program Runtime Stats (bpftool)' };
+const SCENARIO_LABELS = {
+  below_guaranteed: 'Below guaranteed', at_guaranteed: 'At guaranteed', mid_borrow_zone: 'Mid borrow zone',
+  at_ceiling: 'At ceiling', above_ceiling: 'Above ceiling', at_target: 'At target',
+};
 
 function fmt(n, d = 2) { return (n == null || isNaN(n)) ? '—' : Number(n).toFixed(d); }
 function fmtK(n) { return (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('en-US'); }
@@ -42,6 +46,9 @@ function buildExpMarkdown(exp) {
   if (tc) lines.push(`| Traffic Class | ${TC_LABELS[tc] || tc.toUpperCase()} |`);
   lines.push(`| Experiment Type | ${EXP_LABELS[type] || type} |`);
   if (exp.source_filename) lines.push(`| Source File | \`${exp.source_filename}\` |`);
+  if (exp.scenario) lines.push(`| Borrow-test Demand Point | ${SCENARIO_LABELS[exp.scenario] || exp.scenario} |`);
+  if (exp.phase) lines.push(`| Snapshot Phase | ${exp.phase} |`);
+  if (exp.trial_no != null) lines.push(`| Trial # | ${exp.trial_no} |`);
   lines.push(`| Generated | ${now} |`);
   lines.push('');
 
@@ -64,6 +71,8 @@ function buildExpMarkdown(exp) {
     lines.push(row(['RTT Std Dev (µs)', `${fmt(s.rtt_std_us, 0)}`, '—', '']));
     lines.push(row(['Retransmits', fmtK(s.retransmits), '—', 'Sender metric']));
     lines.push(row(['Duration (s)', `${fmt(s.duration_s, 0)}`, '—', '']));
+    if (s.target_bitrate_mbps != null)
+      lines.push(row(['Target Rate (Mbps)', fmt(s.target_bitrate_mbps), '—', 'Borrow-test demand point driven for this scenario']));
     lines.push('');
 
     lines.push('### CPU Utilization (iperf3 measurement)');
@@ -185,16 +194,17 @@ function buildExpMarkdown(exp) {
     lines.push('');
     lines.push('Per-class counters from XDP eBPF map dump.');
     lines.push('');
-    lines.push(row(['Class', 'Key', 'Packets', 'Bytes', 'Calc. Mbps', 'Borrowed', 'ECN Marked', 'Delayed']));
-    lines.push(sep(8));
+    lines.push(row(['Class', 'Key', 'Packets', 'Bytes', 'Calc. Mbps', 'Borrowed', 'ECN Marked', 'Delayed', 'Dropped']));
+    lines.push(sep(9));
     for (const c of exp.ebpfClasses) {
       const mbps = (c.bytes * 8) / 30 / 1e6;
-      lines.push(row([c.class_name, c.class_key, fmtK(c.packets), fmtK(c.bytes), fmt(mbps), fmtK(c.borrowed), fmtK(c.ecn_marked), fmtK(c.delayed)]));
+      lines.push(row([c.class_name, c.class_key, fmtK(c.packets), fmtK(c.bytes), fmt(mbps), fmtK(c.borrowed), fmtK(c.ecn_marked), fmtK(c.delayed), fmtK(c.dropped)]));
     }
     lines.push('');
     const totalEcn = exp.ebpfClasses.reduce((s, c) => s + (Number(c.ecn_marked) || 0), 0);
     const totalDly = exp.ebpfClasses.reduce((s, c) => s + (Number(c.delayed)    || 0), 0);
     const totalBor = exp.ebpfClasses.reduce((s, c) => s + (Number(c.borrowed)   || 0), 0);
+    const totalDrp = exp.ebpfClasses.reduce((s, c) => s + (Number(c.dropped)    || 0), 0);
     lines.push('**Totals:**');
     lines.push('');
     lines.push(row(['Metric', 'Total', 'Interpretation']));
@@ -202,6 +212,24 @@ function buildExpMarkdown(exp) {
     lines.push(row(['ECN Marked', fmtK(totalEcn), totalEcn > 0 ? 'Active congestion signalling observed' : 'No congestion marks']));
     lines.push(row(['Delayed',    fmtK(totalDly), totalDly > 0 ? 'Scheduler held packets — shaping active' : 'No delays recorded']));
     lines.push(row(['Borrowed',   fmtK(totalBor), totalBor > 0 ? 'Bandwidth borrowing between classes occurred' : 'No borrowing']));
+    lines.push(row(['Dropped',    fmtK(totalDrp), totalDrp > 0 ? 'Packets dropped by the classifier' : 'No drops recorded']));
+    lines.push('');
+  }
+
+  // ── bpf_prog ─────────────────────────────────────────────────────────────
+  if (type === 'bpf_prog' && exp.bpfProgStats?.length) {
+    lines.push('## eBPF Program Runtime Stats (bpftool prog show)');
+    lines.push('');
+    lines.push(`Snapshot phase: **${exp.phase || '—'}**. Pair this with the matching before/after experiment to compute per-packet cost.`);
+    lines.push('');
+    lines.push(row(['Prog ID', 'Name', 'Type', 'run_time_ns', 'run_cnt', 'ns/call (cumulative)']));
+    lines.push(sep(6));
+    for (const p of exp.bpfProgStats) {
+      const nsPerCall = p.run_cnt > 0 ? (Number(p.run_time_ns) / Number(p.run_cnt)).toFixed(1) : '—';
+      lines.push(row([p.prog_id, p.prog_name, p.prog_type, fmtK(p.run_time_ns), fmtK(p.run_cnt), nsPerCall]));
+    }
+    lines.push('');
+    lines.push('> These are cumulative program counters since load — the true per-run cost is the **delta** between the paired before/after snapshots divided by the packet count handled in between.');
     lines.push('');
   }
 

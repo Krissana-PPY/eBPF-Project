@@ -24,7 +24,13 @@ export const api = {
 
   uploadFiles: (datasetId: number, files: FileList | File[]) => {
     const form = new FormData();
-    Array.from(files).forEach(f => form.append('files', f));
+    const fileArr = Array.from(files);
+    fileArr.forEach(f => form.append('files', f));
+    // webkitRelativePath (populated when a whole folder is selected) carries
+    // the fair_benchmark_trials/trial_N number — filenames alone repeat across
+    // trials, so the backend needs the path to tell them apart.
+    const paths = fileArr.map(f => (f as File & { webkitRelativePath?: string }).webkitRelativePath || '');
+    form.append('paths', JSON.stringify(paths));
     return fetch(`${BASE}/upload/${datasetId}`, { method: 'POST', body: form })
       .then(r => r.json());
   },

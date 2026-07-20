@@ -157,15 +157,87 @@ function htbTable(htbClasses) {
 function ebpfTable(ebpfClasses) {
   if (!ebpfClasses?.length) return [];
   const lines = [];
-  lines.push(row(['Class Key', 'Class Name', 'Packets', 'Bytes', 'Calc. Mbps', 'Borrowed', 'ECN Marked', 'Delayed']));
-  lines.push(sep(8));
+  lines.push(row(['Class Key', 'Class Name', 'Packets', 'Bytes', 'Calc. Mbps', 'Borrowed', 'ECN Marked', 'Delayed', 'Dropped']));
+  lines.push(sep(9));
   for (const c of ebpfClasses) {
     lines.push(row([
       c.class_key, c.class_name,
       fmtK(c.packets), fmtK(c.bytes),
       fmt(c.throughput_mbps),
-      fmtK(c.borrowed), fmtK(c.ecn_marked), fmtK(c.delayed),
+      fmtK(c.borrowed), fmtK(c.ecn_marked), fmtK(c.delayed), fmtK(c.dropped),
     ]));
+  }
+  return lines;
+}
+
+// ── Loss attribution — dropped/delayed/borrowed as % of packets ───────────────
+// Answers "where does loss come from": drop-based vs delay-based vs borrowed capacity.
+function lossAttributionTable(ebpfClasses) {
+  if (!ebpfClasses?.length) return [];
+  const lines = [];
+  lines.push(row(['Class', 'Packets', 'Dropped %', 'Delayed %', 'Borrowed %']));
+  lines.push(sep(5));
+  for (const c of ebpfClasses) {
+    const pkts = Number(c.packets) || 0;
+    if (!pkts) continue;
+    const pct = v => ((Number(v) || 0) / pkts * 100).toFixed(2) + '%';
+    lines.push(row([c.class_name, fmtK(pkts), pct(c.dropped), pct(c.delayed), pct(c.borrowed)]));
+  }
+  return lines;
+}
+
+// ── Borrow curve — per traffic_class × scenario demand point ──────────────────
+// Proves dynamic borrowing activates only at/above the guaranteed rate.
+const SCENARIO_ORDER = ['below_guaranteed', 'at_guaranteed', 'mid_borrow_zone', 'at_ceiling', 'above_ceiling', 'at_target'];
+const SCENARIO_LABELS = {
+  below_guaranteed: 'Below guaranteed', at_guaranteed: 'At guaranteed', mid_borrow_zone: 'Mid borrow zone',
+  at_ceiling: 'At ceiling', above_ceiling: 'Above ceiling', at_target: 'At target',
+};
+function borrowCurveTable(borrowCurve) {
+  if (!borrowCurve?.length) return [];
+  const lines = [];
+  lines.push(row(['Class', 'Demand Point', 'Target Mbps', 'Actual Mbps', 'DR%', 'Borrowed Δ', 'Delayed Δ', 'Dropped Δ']));
+  lines.push(sep(8));
+  const sorted = [...borrowCurve].sort((a, b) => {
+    const ci = a.traffic_class.localeCompare(b.traffic_class);
+    if (ci !== 0) return ci;
+    return SCENARIO_ORDER.indexOf(a.scenario) - SCENARIO_ORDER.indexOf(b.scenario);
+  });
+  for (const r of sorted) {
+    lines.push(row([
+      r.traffic_class.toUpperCase(), SCENARIO_LABELS[r.scenario] || r.scenario,
+      fmt(r.target_bitrate_mbps), fmt(r.throughput_mbps),
+      r.delivery_ratio != null ? fmt(r.delivery_ratio, 1) + '%' : '—',
+      fmtK(r.borrowed_delta), fmtK(r.delayed_delta), fmtK(r.dropped_delta),
+    ]));
+  }
+  return lines;
+}
+
+// ── eBPF per-packet cost (ns) — classify_and_shape run_time_ns/run_cnt delta ──
+// Separates "is the code itself expensive" from "is it just handling more packets."
+function bpfCostTable(bpfProgStats) {
+  if (!bpfProgStats?.length) return [];
+  const byKey = {};
+  for (const r of bpfProgStats) {
+    const key = `${r.protocol}|${r.trial_no}`;
+    if (!byKey[key]) byKey[key] = {};
+    byKey[key][r.phase] = r;
+  }
+  const nsPerPacket = [];
+  for (const [key, { before, after }] of Object.entries(byKey)) {
+    if (!before || !after) continue;
+    const dTime = Number(after.run_time_ns) - Number(before.run_time_ns);
+    const dCnt  = Number(after.run_cnt)    - Number(before.run_cnt);
+    if (dCnt > 0) nsPerPacket.push({ key, protocol: key.split('|')[0], ns: dTime / dCnt });
+  }
+  if (!nsPerPacket.length) return [];
+
+  const lines = [];
+  for (const proto of [...new Set(nsPerPacket.map(n => n.protocol))]) {
+    const vals = nsPerPacket.filter(n => n.protocol === proto).map(n => n.ns);
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    lines.push(`- **${proto.toUpperCase()}**: mean ${mean.toFixed(1)} ns/packet (min ${Math.min(...vals).toFixed(1)}, max ${Math.max(...vals).toFixed(1)}, n=${vals.length} trials)`);
   }
   return lines;
 }
@@ -183,6 +255,8 @@ function buildModeMarkdown(mode) {
     htbClassesByProtocol  = {},
     ebpfClassesByProtocol = {},
     timeSeries       = {},
+    borrowCurve      = [],
+    bpfProgStats     = [],
   } = mode;
 
   const qLabel = MODE_LABELS[q] || q;
@@ -319,8 +393,37 @@ function buildModeMarkdown(mode) {
       const totalEcn = ebpfClasses.reduce((s, c) => s + (Number(c.ecn_marked) || 0), 0);
       const totalDly = ebpfClasses.reduce((s, c) => s + (Number(c.delayed) || 0), 0);
       const totalBrw = ebpfClasses.reduce((s, c) => s + (Number(c.borrowed) || 0), 0);
-      lines.push(`> **Summary**: ${fmtK(totalEcn)} ECN marks · ${fmtK(totalDly)} delayed · ${fmtK(totalBrw)} borrowed.`);
+      const totalDrp = ebpfClasses.reduce((s, c) => s + (Number(c.dropped) || 0), 0);
+      lines.push(`> **Summary**: ${fmtK(totalEcn)} ECN marks · ${fmtK(totalDly)} delayed · ${fmtK(totalBrw)} borrowed · ${fmtK(totalDrp)} dropped.`);
       if (totalEcn === 0 && q === 'ebpf') lines.push('> Zero ECN marks — eBPF scheduler in drop mode, not active ECN signalling for these traffic classes.');
+      lines.push('');
+    }
+
+    // ── Loss attribution — where does loss come from? ──────────────────────
+    const lossRows = lossAttributionTable(ebpfClasses);
+    if (lossRows.length) {
+      lines.push(h3('Loss Attribution (Dropped vs Delayed vs Borrowed, % of packets)'));
+      lines.push(...lossRows);
+      lines.push('');
+    }
+
+    // ── Borrow curve — dynamic borrowing per demand point ───────────────────
+    const borrowRows = borrowCurveTable(borrowCurve);
+    if (borrowRows.length) {
+      lines.push(h3('Dynamic Borrowing — Per Demand Point'));
+      lines.push('Each row is a dedicated single-class test run at a target rate relative to that class\'s guaranteed/ceiling thresholds. **Borrowed Δ** = after − before eBPF map snapshot for that scenario — proves borrowing activates only at/above the guaranteed rate.');
+      lines.push('');
+      lines.push(...borrowRows);
+      lines.push('');
+    }
+
+    // ── eBPF per-packet cost (ns) ────────────────────────────────────────────
+    const bpfCostLines = bpfCostTable(bpfProgStats);
+    if (bpfCostLines.length) {
+      lines.push(h3('eBPF Per-Packet Cost (classify_and_shape)'));
+      lines.push('`run_time_ns / run_cnt` delta between before/after `bpftool prog show` snapshots — isolates the classifier\'s own CPU cost from overall throughput.');
+      lines.push('');
+      lines.push(...bpfCostLines);
       lines.push('');
     }
   }
@@ -363,11 +466,22 @@ function buildModeMarkdown(mode) {
       if (aTo != null) lines.push(row(['**Total Active**', `**${aTo}%**`, 'usr+nice+sys+iowait+softirq']));
       lines.push('');
 
-      if (aTo != null) {
-        const pct = parseFloat(aTo);
-        lines.push(`> **Interpretation**: ${pct < 15 ? 'Low CPU utilization — QoS overhead is negligible.' :
-          pct < 35 ? 'Moderate CPU utilization — monitor under higher traffic load.' :
-          'High CPU utilization — consider profiling the eBPF/XDP hook and softirq path.'}`);
+      // Peak & variance of the per-1s total (usr+sys+soft+iowait) — spike vs sustained load
+      const totals = allCpu.map(s => (s.usr || 0) + (s.sys || 0) + (s.soft || 0) + (s.iowait || 0));
+      if (totals.length > 1) {
+        const meanTot = totals.reduce((a, b) => a + b, 0) / totals.length;
+        const peakTot = Math.max(...totals);
+        const stdTot  = Math.sqrt(totals.reduce((s, v) => s + (v - meanTot) ** 2, 0) / totals.length);
+        lines.push(row(['CPU (1s samples)', 'Value', 'Notes']));
+        lines.push(sep(3));
+        lines.push(row(['Mean total active %', fmt(meanTot),  `n=${totals.length} samples`]));
+        lines.push(row(['Peak total active %', fmt(peakTot),  'highest single 1s sample']));
+        lines.push(row(['Std dev',             fmt(stdTot),   'variance of 1s samples']));
+        lines.push('');
+        const spikeRatio = meanTot > 0 ? peakTot / meanTot : 1;
+        lines.push(`> **Interpretation**: ${spikeRatio > 1.8
+          ? `Peak (${fmt(peakTot)}%) is well above mean (${fmt(meanTot)}%) — CPU load is **spiky**, not sustained.`
+          : `Peak (${fmt(peakTot)}%) is close to mean (${fmt(meanTot)}%) — CPU load is **sustained** throughout the test, not driven by brief spikes.`}`);
         lines.push('');
       }
     }

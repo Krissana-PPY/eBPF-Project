@@ -1,5 +1,5 @@
 'use client';
-import { useState, useRef, DragEvent } from 'react';
+import { useState, useRef, useEffect, DragEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Upload, CheckCircle, XCircle, FileText, Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -14,6 +14,12 @@ interface FileResult {
 export default function UploadPage() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  // webkitdirectory isn't part of React's typed DOM attributes — set imperatively
+  useEffect(() => {
+    folderInputRef.current?.setAttribute('webkitdirectory', '');
+  }, []);
 
   const [name,        setName]        = useState('');
   const [description, setDescription] = useState('');
@@ -23,12 +29,16 @@ export default function UploadPage() {
   const [results,     setResults]     = useState<FileResult[] | null>(null);
   const [globalError, setGlobalError] = useState('');
 
+  // Folder uploads repeat identical basenames across trial_N subfolders — key
+  // on the full relative path (falls back to name for flat/dragged files).
+  const fileKey = (f: File) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+
   const addFiles = (fl: FileList | null) => {
     if (!fl) return;
     const valid = Array.from(fl).filter(f => /\.(json|txt)$/i.test(f.name));
     setFiles(prev => {
-      const names = new Set(prev.map(f => f.name));
-      return [...prev, ...valid.filter(f => !names.has(f.name))];
+      const keys = new Set(prev.map(fileKey));
+      return [...prev, ...valid.filter(f => !keys.has(fileKey(f)))];
     });
   };
 
@@ -37,8 +47,8 @@ export default function UploadPage() {
     addFiles(e.dataTransfer.files);
   };
 
-  const removeFile = (name: string) =>
-    setFiles(prev => prev.filter(f => f.name !== name));
+  const removeFile = (key: string) =>
+    setFiles(prev => prev.filter(f => fileKey(f) !== key));
 
   const handleSubmit = async () => {
     if (!name.trim())        return setGlobalError('กรุณาใส่ชื่อ dataset');
@@ -98,18 +108,39 @@ export default function UploadPage() {
             className="hidden" onChange={e => addFiles(e.target.files)} />
         </div>
 
+        {/* Folder picker — for full_suite_* directories with fair_benchmark_trials/trial_N
+            subfolders, where identically-named files repeat per trial and only the
+            folder path (webkitRelativePath) disambiguates them */}
+        <button
+          type="button"
+          onClick={() => folderInputRef.current?.click()}
+          className="flex items-center justify-center gap-2 w-full py-2 rounded border border-dashed border-border text-muted hover:border-accent/30 hover:text-textdim font-mono text-xs transition-colors">
+          <FileText size={13} />
+          หรือเลือกทั้งโฟลเดอร์ (เช่น full_suite_*) — รองรับ trial ย่อยหลายชุด
+        </button>
+        <input
+          ref={folderInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          // webkitdirectory isn't in React's typed attributes — set via ref instead
+          onChange={e => addFiles(e.target.files)}
+        />
+
         {/* File list */}
         {files.length > 0 && (
-          <div className="card overflow-hidden">
-            <div className="px-3 py-2 border-b border-border font-mono text-xs text-muted">
+          <div className="card overflow-hidden max-h-80 overflow-y-auto">
+            <div className="px-3 py-2 border-b border-border font-mono text-xs text-muted sticky top-0 bg-surface">
               {files.length} ไฟล์ที่เลือก
             </div>
             {files.map(f => (
-              <div key={f.name} className="flex items-center gap-2 px-3 py-2 border-b border-border last:border-0">
+              <div key={fileKey(f)} className="flex items-center gap-2 px-3 py-2 border-b border-border last:border-0">
                 <FileText size={13} className="text-muted flex-shrink-0" />
-                <span className="font-mono text-xs text-textdim flex-1 truncate">{f.name}</span>
+                <span className="font-mono text-xs text-textdim flex-1 truncate" title={fileKey(f)}>
+                  {(f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name}
+                </span>
                 <span className="font-mono text-xs text-muted">{(f.size / 1024).toFixed(0)} KB</span>
-                <button onClick={() => removeFile(f.name)}
+                <button onClick={() => removeFile(fileKey(f))}
                   className="text-muted hover:text-red-400 transition-colors"><XCircle size={13} /></button>
               </div>
             ))}

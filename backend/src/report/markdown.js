@@ -72,11 +72,11 @@ function udpTable(mByQos) {
   return lines;
 }
 
-// Build CPU sar table (avgUsr/avgSys/avgIowait/avgSoft/avgIdle/avgTotal)
+// Build CPU sar table (avgUsr/avgSys/avgIowait/avgSoft/avgIdle/avgTotal + peak/variance)
 function cpuTable(mByQos) {
   const lines = [];
-  lines.push(row(['QoS', 'User %', 'System %', 'IOWait %', 'Softirq %', 'Idle %', 'Total Active %', 'SAR Samples']));
-  lines.push(sep(8));
+  lines.push(row(['QoS', 'User %', 'System %', 'IOWait %', 'Softirq %', 'Idle %', 'Total Active %', 'Peak Total %', 'σ (1s samples)', 'SAR Samples']));
+  lines.push(sep(10));
   for (const q of QOS_KEYS) {
     const cpu = mByQos[q]?.cpu;
     if (!cpu) continue;
@@ -84,6 +84,8 @@ function cpuTable(mByQos) {
       QOS_LABELS[q],
       fmt(cpu.avgUsr), fmt(cpu.avgSys), fmt(cpu.avgIowait ?? 0),
       fmt(cpu.avgSoft), fmt(cpu.avgIdle), fmt(cpu.avgTotal),
+      cpu.peakTotal   != null ? fmt(cpu.peakTotal)   : '—',
+      cpu.stdDevTotal != null ? fmt(cpu.stdDevTotal) : '—',
       fmtK(cpu.samples),
     ]));
   }
@@ -310,10 +312,10 @@ function buildMarkdown(ds) {
     lines.push('');
     for (const { label, map } of ebpfMaps) {
       lines.push(h3(`5.x ${label}`));
-      lines.push(row(['Class', 'Packets', 'Bytes', 'Calc. Mbps', 'Borrowed', 'ECN Marked', 'Delayed']));
-      lines.push(sep(7));
+      lines.push(row(['Class', 'Packets', 'Bytes', 'Calc. Mbps', 'Borrowed', 'ECN Marked', 'Delayed', 'Dropped']));
+      lines.push(sep(8));
       for (const [cls, s] of Object.entries(map)) {
-        lines.push(row([cls, fmtK(s.packets), fmtK(s.bytes), fmt(s.throughputMbps), fmtK(s.borrowed), fmtK(s.ecnMarked), fmtK(s.delayed)]));
+        lines.push(row([cls, fmtK(s.packets), fmtK(s.bytes), fmt(s.throughputMbps), fmtK(s.borrowed), fmtK(s.ecnMarked), fmtK(s.delayed), fmtK(s.dropped)]));
       }
       lines.push('');
     }

@@ -14,7 +14,8 @@ const MAX_MB     = parseInt(process.env.MAX_FILE_SIZE_MB || '200');
 const storage = multer.memoryStorage();
 const upload  = multer({
   storage,
-  limits: { fileSize: MAX_MB * 1024 * 1024, files: 100 },
+  // full_suite_* research runs (fair_benchmark_trials × 10 + borrow_tests) can exceed 300 files
+  limits: { fileSize: MAX_MB * 1024 * 1024, files: 2000 },
   fileFilter: (req, file, cb) => {
     const ok = /\.(json|txt)$/i.test(file.originalname);
     cb(ok ? null : new Error(`Only .json and .txt files accepted: ${file.originalname}`), ok);
@@ -30,6 +31,12 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
   const client = await pool.connect();
   const results = [];
 
+  // relative paths (webkitRelativePath), same order as req.files, used to
+  // recover the fair_benchmark_trials/trial_N number — filenames alone repeat
+  // identically across trials, so only the folder path carries the trial number.
+  let relPaths = [];
+  try { relPaths = JSON.parse(req.body.paths || '[]'); } catch { relPaths = []; }
+
   try {
     await client.query('BEGIN');
 
@@ -39,14 +46,20 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
       return res.status(404).json({ error: 'Dataset not found' });
     }
 
-    for (const file of req.files) {
+    for (let fi = 0; fi < req.files.length; fi++) {
+      const file = req.files[fi];
       try {
         const { meta, data } = parseFile(file.originalname, file.buffer);
 
+        const relPath = relPaths[fi] || '';
+        const trialM  = relPath.match(/trial_(\d+)/i);
+        const trialNo = trialM ? parseInt(trialM[1]) : null;
+
         const expRes = await client.query(
-          `INSERT INTO experiments (dataset_id, qos_type, protocol, traffic_class, experiment_type, source_filename)
-           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-          [datasetId, meta.qosType, meta.protocol || null, meta.trafficClass, meta.experimentType, file.originalname]
+          `INSERT INTO experiments (dataset_id, qos_type, protocol, traffic_class, experiment_type, source_filename, phase, scenario, trial_no)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+          [datasetId, meta.qosType, meta.protocol || null, meta.trafficClass, meta.experimentType, file.originalname,
+           meta.phase || null, meta.scenario || null, trialNo]
         );
         const expId = expRes.rows[0].id;
 
@@ -62,8 +75,9 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
               retransmits, duration_s,
               cpu_host_total, cpu_host_user, cpu_host_system,
               cpu_remote_total, cpu_remote_user, cpu_remote_system,
-              jitter_ms, lost_packets, sent_packets, rcv_packets, lost_percent)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+              jitter_ms, lost_packets, sent_packets, rcv_packets, lost_percent,
+              target_bitrate_mbps, tos)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
             [expId,
              s.throughputMbps,     s.rcvBytes,
              s.sentThroughputMbps, s.sentBytes,     s.deliveryRatio,
@@ -72,7 +86,8 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
              s.retransmits,        s.durationS,
              s.cpuHostTotal,       s.cpuHostUser,   s.cpuHostSystem,
              s.cpuRemoteTotal,     s.cpuRemoteUser, s.cpuRemoteSystem,
-             s.jitterMs,           s.lostPackets,   s.sentPackets,   s.rcvPackets, s.lostPercent]
+             s.jitterMs,           s.lostPackets,   s.sentPackets,   s.rcvPackets, s.lostPercent,
+             s.targetBitrateMbps,  s.tos]
           );
 
           if (data.intervals?.length) {
@@ -114,9 +129,19 @@ router.post('/:datasetId', upload.array('files'), async (req, res, next) => {
           for (const cls of data.classes) {
             await client.query(
               `INSERT INTO ebpf_class_stats
-               (experiment_id, class_key, class_name, packets, bytes, borrowed, ecn_marked, delayed)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-              [expId, cls.classKey, cls.className, cls.packets, cls.bytes, cls.borrowed, cls.ecnMarked, cls.delayed]
+               (experiment_id, class_key, class_name, packets, bytes, borrowed, ecn_marked, delayed, dropped)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+              [expId, cls.classKey, cls.className, cls.packets, cls.bytes, cls.borrowed, cls.ecnMarked, cls.delayed, cls.dropped]
+            );
+          }
+
+        } else if (meta.experimentType === 'bpf_prog') {
+          for (const prog of data.programs) {
+            await client.query(
+              `INSERT INTO bpf_prog_stats
+               (experiment_id, prog_id, prog_name, prog_type, run_time_ns, run_cnt)
+               VALUES ($1,$2,$3,$4,$5,$6)`,
+              [expId, prog.progId, prog.progName, prog.progType, prog.runTimeNs, prog.runCnt]
             );
           }
         }
